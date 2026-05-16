@@ -1,0 +1,47 @@
+---
+- name: Euroscale authz/access verification only
+  hosts: local
+  gather_facts: false
+  vars:
+    cluster_type: "{{ lookup('ansible.builtin.env', 'CLUSTER_TYPE') | default('kind', true) }}"
+    ansible_venv_dir: "/home/kajmo/workspace/euroscale/.venv"
+    ansible_venv_python: "/home/kajmo/workspace/euroscale/.venv/bin/python"
+  pre_tasks:
+    - name: Use virtualenv Python interpreter for this play
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ ansible_venv_python }}"
+
+    - name: Reset connection to apply virtualenv interpreter
+      ansible.builtin.meta: reset_connection
+
+    - name: Check OPA CLI availability for strict authz tests
+      ansible.builtin.command:
+        argv:
+          - opa
+          - version
+      register: opa_cli_check
+      changed_when: false
+      failed_when: false
+      when: authz_tests_require_opa | default(true) | bool
+
+    - name: Ensure OPA CLI exists when strict authz tests are enabled
+      ansible.builtin.assert:
+        that:
+          - opa_cli_check.rc | default(1) == 0
+        fail_msg: >-
+          OPA CLI is required for authz tests but was not found in PATH.
+          Run ./scripts/setup.sh (installs OPA) and re-run make authz-test.
+      when: authz_tests_require_opa | default(true) | bool
+
+    - name: Generate centralized authz artifacts
+      ansible.builtin.command:
+        argv:
+          - node
+          - ./scripts/generate-authz-config.mjs
+      args:
+        chdir: "{{ control_plane_root }}"
+
+  tasks:
+    - name: Run authz/access verification role
+      ansible.builtin.include_role:
+        name: authz_tests

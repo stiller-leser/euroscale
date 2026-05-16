@@ -1,0 +1,366 @@
+{
+  "argocd": {
+    "policyCsvLines": [
+      "p, role:admin, *, *, */*, allow",
+      "p, role:backstage-read, applications, get, *, allow",
+      "p, role:backstage-read, applications, get, */*, allow",
+      "p, role:backstage-read, applications, get, */*/*, allow",
+      "p, role:backstage-read, projects, get, *, allow",
+      "p, role:backstage-read, repositories, get, *, allow",
+      "p, role:backstage-read, clusters, get, *, allow",
+      "p, role:agencies-read, applications, get, agencies/*, allow",
+      "p, role:agencies-read, projects, get, agencies, allow",
+      "p, role:agencies-read, repositories, get, *, allow",
+      "p, role:agencies-read, clusters, get, *, allow",
+      "p, backstage, applications, get, *, allow",
+      "p, backstage, applications, get, */*, allow",
+      "p, backstage, applications, get, */*/*, allow",
+      "p, backstage:apiKey, applications, get, *, allow",
+      "p, backstage:apiKey, applications, get, */*, allow",
+      "p, backstage:apiKey, applications, get, */*/*, allow",
+      "p, backstage, projects, get, *, allow",
+      "p, backstage:apiKey, projects, get, *, allow",
+      "p, backstage, repositories, get, *, allow",
+      "p, backstage:apiKey, repositories, get, *, allow",
+      "p, backstage, clusters, get, *, allow",
+      "p, backstage:apiKey, clusters, get, *, allow",
+      "g, backstage, role:backstage-read",
+      "g, backstage:apiKey, role:backstage-read",
+      "g, argocd-admin, role:admin",
+      "g, argocd-admins, role:admin",
+      "g, agencies-admin, role:agencies-read",
+      "g, agencies-admins, role:agencies-read",
+      "g, /argocd-admin, role:admin",
+      "g, /argocd-admins, role:admin",
+      "g, /agencies-admin, role:agencies-read",
+      "g, /agencies-admins, role:agencies-read"
+    ]
+  },
+  "keycloak": {
+    "realmRoles": [
+      {
+        "name": "argocd-admin",
+        "description": "ArgoCD administrators"
+      },
+      {
+        "name": "agencies-admin",
+        "description": "Agencies lifecycle administrators"
+      },
+      {
+        "name": "openbao-admin",
+        "description": "OpenBao administrators"
+      },
+      {
+        "name": "kube-admin",
+        "description": "Kubernetes cluster administrators"
+      },
+      {
+        "name": "kcp-user",
+        "description": "KCP workspace user"
+      }
+    ],
+    "groups": [
+      {
+        "name": "argocd-admin"
+      },
+      {
+        "name": "agencies-admin"
+      },
+      {
+        "name": "openbao-admin"
+      },
+      {
+        "name": "kube-admin"
+      },
+      {
+        "name": "kcp-user"
+      }
+    ],
+    "users": [
+      {
+        "username": "argocd-admin",
+        "enabled": true,
+        "emailVerified": true,
+        "email": "argocd-admin@local",
+        "firstName": "Argo",
+        "lastName": "CD",
+        "requiredActions": [
+          "UPDATE_PASSWORD"
+        ],
+        "realmRoles": [
+          "argocd-admin"
+        ],
+        "groups": [
+          "argocd-admin"
+        ],
+        "credentials": [
+          {
+            "type": "password",
+            "value": "ChangeMe123!",
+            "temporary": true
+          }
+        ]
+      },
+      {
+        "username": "kube-admin",
+        "enabled": true,
+        "emailVerified": true,
+        "email": "kube-admin@local",
+        "firstName": "Kube",
+        "lastName": "Admin",
+        "requiredActions": [
+          "UPDATE_PASSWORD"
+        ],
+        "realmRoles": [
+          "kube-admin"
+        ],
+        "groups": [
+          "kube-admin"
+        ],
+        "credentials": [
+          {
+            "type": "password",
+            "value": "ChangeMe123!",
+            "temporary": true
+          }
+        ]
+      },
+      {
+        "username": "kcp-user",
+        "enabled": true,
+        "emailVerified": true,
+        "email": "kcp-user@local",
+        "firstName": "KCP",
+        "lastName": "User",
+        "requiredActions": [
+          "UPDATE_PASSWORD"
+        ],
+        "realmRoles": [
+          "kcp-user"
+        ],
+        "groups": [
+          "kcp-user"
+        ],
+        "credentials": [
+          {
+            "type": "password",
+            "value": "ChangeMe123!",
+            "temporary": true
+          }
+        ]
+      },
+      {
+        "username": "openbao-admin",
+        "enabled": true,
+        "emailVerified": true,
+        "email": "openbao-admin@local",
+        "firstName": "OpenBao",
+        "lastName": "Admin",
+        "requiredActions": [
+          "UPDATE_PASSWORD"
+        ],
+        "realmRoles": [
+          "openbao-admin"
+        ],
+        "groups": [
+          "openbao-admin"
+        ],
+        "credentials": [
+          {
+            "type": "password",
+            "value": "ChangeMe123!",
+            "temporary": true
+          }
+        ]
+      },
+      {
+        "username": "agencies-admin",
+        "enabled": true,
+        "emailVerified": true,
+        "email": "agencies-admin@local",
+        "firstName": "Agencies",
+        "lastName": "Admin",
+        "requiredActions": [
+          "UPDATE_PASSWORD"
+        ],
+        "realmRoles": [
+          "agencies-admin"
+        ],
+        "groups": [
+          "agencies-admin"
+        ],
+        "credentials": [
+          {
+            "type": "password",
+            "value": "ChangeMe123!",
+            "temporary": true
+          }
+        ]
+      },
+      {
+        "username": "backstage-sync",
+        "enabled": true,
+        "emailVerified": true,
+        "email": "backstage-sync@local",
+        "firstName": "Backstage",
+        "lastName": "Sync",
+        "realmRoles": [],
+        "clientRoles": {
+          "realm-management": [
+            "query-users",
+            "query-groups",
+            "view-users",
+            "view-groups"
+          ]
+        },
+        "credentials": [
+          {
+            "type": "password",
+            "value": "backstage-sync-local-secret",
+            "temporary": false
+          }
+        ]
+      }
+    ]
+  },
+  "backstage": {
+    "roleSets": {
+      "agenciesAdmin": [
+        "agencies-admin",
+        "agencies-admins"
+      ],
+      "argocdAdmin": [
+        "argocd-admin",
+        "argocd-admins"
+      ],
+      "openbaoAdmin": [
+        "openbao-admin",
+        "openbao-admins"
+      ]
+    },
+    "argocdPluginRoles": [
+      "argocd-admin",
+      "argocd-admins",
+      "agencies-admin",
+      "agencies-admins"
+    ],
+    "catalogScopes": {
+      "agenciesXrd": [
+        {
+          "annotation": "backstage.euroscale.io/scope",
+          "value": "agencies-xrd"
+        },
+        {
+          "annotation": "terasky.backstage.io/scope",
+          "value": "agencies-xrd"
+        },
+        {
+          "annotation": "terasky.backstage.io/crossplane-claim"
+        },
+        {
+          "annotation": "terasky.backstage.io/crossplane-version"
+        }
+      ],
+      "agenciesArgocd": [
+        {
+          "annotation": "backstage.euroscale.io/scope-agencies-argocd"
+        }
+      ],
+      "argocd": [
+        {
+          "annotation": "backstage.euroscale.io/scope-argocd"
+        },
+        {
+          "annotation": "backstage.euroscale.io/scope",
+          "value": "argocd"
+        },
+        {
+          "annotation": "argocd/app-name"
+        },
+        {
+          "annotation": "argocd/app-selector"
+        }
+      ],
+      "openbao": [
+        {
+          "annotation": "backstage.euroscale.io/scope-openbao"
+        },
+        {
+          "annotation": "vault.io/secrets-path"
+        }
+      ]
+    },
+    "menu": {
+      "argocdAdmin": [
+        {
+          "to": "catalog/default/component/argocd",
+          "text": "Argo CD (Control Plane)"
+        },
+        {
+          "to": "catalog/default/component/argocd-agencies",
+          "text": "Argo CD (Agencies)"
+        }
+      ],
+      "agenciesAdmin": [
+        {
+          "to": "catalog/default/component/argocd-agencies",
+          "text": "Argo CD"
+        }
+      ]
+    },
+    "argocdCatalogComponents": [
+      {
+        "name": "argocd",
+        "project": "control-plane",
+        "scopeArgocd": true,
+        "scopeAgenciesArgocd": false,
+        "owner": "group:default/argocd-admins",
+        "system": "gitops-platform"
+      },
+      {
+        "name": "argocd-agencies",
+        "project": "agencies",
+        "scopeArgocd": true,
+        "scopeAgenciesArgocd": true,
+        "owner": "group:default/agencies-admins",
+        "system": "gitops-platform"
+      }
+    ]
+  },
+  "openbao": {
+    "oidcRoleBindings": [
+      {
+        "name": "oidc",
+        "tokenPolicies": "default,openbao-admin",
+        "boundRoles": [
+          "openbao-admin"
+        ]
+      },
+      {
+        "name": "openbao-admin",
+        "tokenPolicies": "default,openbao-admin",
+        "boundRoles": [
+          "openbao-admin"
+        ]
+      }
+    ]
+  },
+  "oauth2Proxy": {
+    "backstageAllowedRoles": [
+      "agencies-admin",
+      "argocd-admin",
+      "openbao-admin"
+    ],
+    "openbaoAllowedRoles": [
+      "openbao-admin"
+    ]
+  },
+  "kubeconfigs": {
+    "kubeOidcUser": "kube-admin",
+    "kcpOidcUser": "kcp-user",
+    "kcpOidcUsers": [
+      "kcp-user"
+    ],
+    "kcpOidcServerUrl": "https://kcp.internal.euroscale.local"
+  }
+}

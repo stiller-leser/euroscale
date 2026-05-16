@@ -1,0 +1,11 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    openbao_action: pre_argo
+    openbao_namespace: openbao
+  tasks:
+    - name: Import openbao role
+      import_role:
+        name: openbao

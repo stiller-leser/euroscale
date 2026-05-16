@@ -1,0 +1,17 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "customer.certificateName" . }}
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ include "customer.agencyLabel" . | quote }}
+    euro.scale/customer: {{ include "customer.customerLabel" . | quote }}
+spec:
+  secretName: {{ include "customer.certificateName" . }}
+  issuerRef:
+    name: euroscale-local-ca
+    kind: ClusterIssuer
+  commonName: {{ include "customer.host" . | quote }}
+  dnsNames:
+    - {{ include "customer.host" . | quote }}

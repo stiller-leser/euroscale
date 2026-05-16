@@ -1,0 +1,30 @@
+---
+certs_ensure_internal_gateway: true
+certs_apply_to_k8s: true
+certs_organization: Euroscale
+
+istio_namespace: istio-system
+wildcard_internal_host: "*.internal.euroscale.local"
+argocd_host: argocd.internal.euroscale.local
+openbao_host: openbao.internal.euroscale.local
+backstage_host: backstage.internal.euroscale.local
+internal_base_host: internal.euroscale.local
+wildcard_base_host: "*.euroscale.local"
+base_domain: euroscale.local
+
+certs_output_dir: "{{ playbook_dir }}/../../gitops/argocd/bootstrap/apps/infrastructure/istio/certs"
+internal_ca_key: "{{ certs_output_dir }}/euroscale-local-ca.key"
+internal_ca_crt: "{{ certs_output_dir }}/euroscale-local-ca.crt"
+wildcard_tls_key: "{{ certs_output_dir }}/euroscale-local-wildcard-tls.key"
+wildcard_tls_crt: "{{ certs_output_dir }}/euroscale-local-wildcard-tls.crt"
+wildcard_tls_csr: "{{ certs_output_dir }}/euroscale-local-wildcard-tls.csr"
+
+# Compute SAN list
+wildcard_san_list:
+  - "DNS:{{ wildcard_internal_host }}"
+  - "DNS:{{ argocd_host }}"
+  - "DNS:{{ openbao_host }}"
+  - "DNS:{{ backstage_host }}"
+  - "DNS:{{ internal_base_host }}"
+  - "DNS:{{ wildcard_base_host }}"
+  - "DNS:{{ base_domain }}"

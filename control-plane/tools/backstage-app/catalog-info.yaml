@@ -1,0 +1,224 @@
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: argocd-admin
+  description: ArgoCD Administrator
+spec:
+  profile:
+    displayName: ArgoCD Admin
+    email: argocd-admin@local
+  memberOf:
+    - argocd-admins
+---
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: openbao-admin
+  description: OpenBao Administrator
+spec:
+  profile:
+    displayName: OpenBao Admin
+    email: openbao-admin@local
+  memberOf:
+    - openbao-admins
+---
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: agencies-admin
+  description: Agencies Administrator
+spec:
+  profile:
+    displayName: Agencies Admin
+    email: agencies-admin@local
+  memberOf:
+    - agencies-admins
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: argocd-admins
+  description: ArgoCD Administrators
+  annotations:
+    backstage.euroscale.io/scope: argocd
+    backstage.euroscale.io/scope-argocd: "true"
+spec:
+  type: team
+  profile:
+    displayName: ArgoCD Admins
+  children: []
+  members:
+    - argocd-admin
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: openbao-admins
+  description: OpenBao Administrators
+  annotations:
+    backstage.euroscale.io/scope-openbao: "true"
+spec:
+  type: team
+  profile:
+    displayName: OpenBao Admins
+  children: []
+  members:
+    - openbao-admin
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: agencies-admins
+  description: Agencies Administrators
+  annotations:
+    backstage.euroscale.io/scope-agencies: "true"
+    backstage.euroscale.io/scope-argocd: "true"
+    backstage.euroscale.io/scope-agencies-argocd: "true"
+spec:
+  type: team
+  profile:
+    displayName: Agencies Admins
+  children: []
+  members:
+    - agencies-admin
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: platform-team
+  description: Platform Team
+spec:
+  type: team
+  profile:
+    displayName: Platform Team
+  children: []
+  members: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Domain
+metadata:
+  name: infrastructure
+  annotations:
+    backstage.euroscale.io/scope-argocd: "true"
+spec:
+  owner: group:default/platform-team
+---
+apiVersion: backstage.io/v1alpha1
+kind: Domain
+metadata:
+  name: data
+  annotations:
+    backstage.euroscale.io/scope-openbao: "true"
+    backstage.euroscale.io/scope-agencies: "true"
+spec:
+  owner: group:default/platform-team
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: gitops-platform
+  annotations:
+    backstage.euroscale.io/scope: argocd
+    backstage.euroscale.io/scope-argocd: "true"
+    backstage.euroscale.io/scope-agencies-argocd: "true"
+spec:
+  owner: group:default/platform-team
+  domain: infrastructure
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: data-platform
+  annotations:
+    backstage.euroscale.io/scope-openbao: "true"
+    backstage.euroscale.io/scope-agencies: "true"
+spec:
+  owner: group:default/platform-team
+  domain: data
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: euroscale-backstage
+  description: Euroscale Backstage portal.
+  annotations:
+    argocd/app-name: apps
+    vault.io/secrets-path: euroscale/backstage
+spec:
+  type: website
+  lifecycle: production
+  owner: group:default/agencies-admins
+  system: gitops-platform
+---
+# BEGIN AUTHZ GENERATED BACKSTAGE_ARGOCD_COMPONENTS
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: argocd
+  annotations:
+    argocd/project-name: "control-plane"
+    backstage.euroscale.io/scope-argocd: "true"
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/argocd-admins
+  system: gitops-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: argocd-agencies
+  annotations:
+    argocd/project-name: "agencies"
+    backstage.euroscale.io/scope-argocd: "true"
+    backstage.euroscale.io/scope-agencies-argocd: "true"
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/agencies-admins
+  system: gitops-platform
+---
+# END AUTHZ GENERATED BACKSTAGE_ARGOCD_COMPONENTS
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: postgres-cluster
+  annotations:
+    crossplane.io/xrd: "true"
+    backstage.euroscale.io/scope: agencies-xrd
+    backstage.euroscale.io/scope-agencies: "true"
+spec:
+  type: database
+  owner: group:default/agencies-admins
+  system: data-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: openbao-secrets
+  annotations:
+    vault.io/secrets-path: euroscale
+    backstage.euroscale.io/scope-openbao: "true"
+spec:
+  type: vault-secret
+  owner: group:default/openbao-admins
+  system: data-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: argocd-api
+  annotations:
+    backstage.euroscale.io/scope: argocd
+    backstage.euroscale.io/scope-argocd: "true"
+spec:
+  type: openapi
+  lifecycle: production
+  owner: group:default/argocd-admins
+  system: gitops-platform
+  definition: |
+    openapi: 3.0.0
+    info:
+      title: ArgoCD API
+      version: "1.0.0"
+    paths: {}

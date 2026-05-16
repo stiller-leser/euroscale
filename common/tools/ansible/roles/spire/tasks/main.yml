@@ -1,0 +1,108 @@
+---
+- name: Wait for SPIRE namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ spire_namespace }}"
+  register: spire_ns
+  retries: 120
+  delay: 5
+  until: spire_ns.resources | length > 0
+
+- name: Wait for SPIRE server deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: spire-server
+    namespace: "{{ spire_namespace }}"
+  register: spire_ss
+  retries: 120
+  delay: 5
+  until:
+    - spire_ss.resources | length > 0
+    - spire_ss.resources[0].status.readyReplicas | default(0) | int > 0
+
+- name: Verify SPIRE server health
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ spire_namespace }}"
+      - exec
+      - statefulset/spire-server
+      - --
+      - /opt/spire/bin/spire-server
+      - healthcheck
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: spire_health
+  changed_when: false
+  failed_when: false
+  retries: 120
+  delay: 10
+  until: spire_health.rc == 0
+
+- name: Wait for SPIRE agent DaemonSet to be ready
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: spire-agent
+    namespace: "{{ spire_namespace }}"
+  register: spire_agent_ds
+  retries: 120
+  delay: 5
+  until:
+    - spire_agent_ds.resources | length > 0
+    - spire_agent_ds.resources[0].status.numberReady | default(0) | int > 0
+
+- name: Get SPIRE agent SPIFFE IDs
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ spire_namespace }}"
+      - exec
+      - statefulset/spire-server
+      - --
+      - /opt/spire/bin/spire-server
+      - agent
+      - list
+      - -output
+      - json
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: spire_agents
+  changed_when: false
+
+- name: Extract first agent SPIFFE ID as parent
+  ansible.builtin.set_fact:
+    spire_agent_id: "spiffe://{{ ((spire_agents.stdout | from_json).agents[0].id.trust_domain) }}{{ ((spire_agents.stdout | from_json).agents[0].id.path) }}"
+
+- name: Create SPIRE registration entries for workloads
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ spire_namespace }}"
+      - exec
+      - statefulset/spire-server
+      - --
+      - /opt/spire/bin/spire-server
+      - entry
+      - create
+      - -parentID
+      - "{{ spire_agent_id }}"
+      - -spiffeID
+      - "{{ item.spiffe_id }}"
+      - -selector
+      - "k8s:ns:{{ item.ns }}"
+      - -selector
+      - "k8s:sa:{{ item.sa }}"
+      - -ttl
+      - "3600"
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: spire_entry_create
+  changed_when: "'Entry ID' in (spire_entry_create.stdout | default(''))"
+  failed_when: false
+  loop: "{{ spire_registration_entries }}"

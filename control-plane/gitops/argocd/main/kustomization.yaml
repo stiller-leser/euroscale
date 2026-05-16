@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - oauth2-proxy.yaml
+  - oauth2-proxy-routing.yaml
+  - backstage.yaml
+  - kcp.yaml
+  - kcp-tenancy.yaml
+  - kcp-argocd-cluster.yaml
+  - kcp-routing.yaml
+  - vcluster.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd
+  app.euroscale.io/stage: main

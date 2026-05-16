@@ -1,0 +1,30 @@
+---
+- name: Ensure OpenBao runtime state (init, token, unseal)
+  ansible.builtin.include_tasks: _ensure_runtime.yml
+  when: openbao_action in ["pre_argo", "post_argo", "sync_kcp_kubeconfig"]
+
+- name: Run OpenBao pre-argo workflow
+  ansible.builtin.include_tasks: pre_argo.yml
+  when: openbao_action == "pre_argo"
+
+- name: Wait for External Secrets stores to exist
+  ansible.builtin.include_tasks: wait_external_secrets_stores_exist.yml
+  when: openbao_action == "wait_external_secrets_stores_exist"
+
+- name: Run OpenBao post-argo workflow
+  ansible.builtin.include_tasks: post_argo.yml
+  when: openbao_action == "post_argo"
+
+- name: Wait for External Secrets stores to be ready
+  ansible.builtin.include_tasks: wait_external_secrets_stores_ready.yml
+  when: openbao_action == "wait_external_secrets_stores_ready"
+
+- name: Sync KCP kubeconfig workflow
+  ansible.builtin.include_tasks: sync_kcp_kubeconfig.yml
+  when: openbao_action == "sync_kcp_kubeconfig"
+
+- name: Ensure openbao_action is recognized
+  ansible.builtin.assert:
+    that:
+      - openbao_action in ["pre_argo", "wait_external_secrets_stores_exist", "post_argo", "wait_external_secrets_stores_ready", "sync_kcp_kubeconfig"]
+    fail_msg: "Unknown openbao_action: {{ openbao_action }}"

@@ -1,0 +1,26 @@
+agencyName: placeholder
+clusterClass: local-vcluster
+targetClusterName: in-cluster
+provider:
+  type: generic
+argocd:
+  baseUrl: https://argocd.internal.euroscale.local
+  projectName: ""
+backstage:
+  chartVersion: "2.6.1"
+  image:
+    registry: localhost:5001
+    repository: backstage-oidc
+    tag: local
+    pullPolicy: Always
+oauth2Proxy:
+  clientId: backstage-proxy
+  clientSecret: backstage-proxy-local-secret
+  cookieSecret: iiNB7pyPCJguy9YT8VR21LiSTe2n2H4x
+  allowedRole: agencies-admin
+keycloak:
+  host: keycloak.internal.euroscale.local
+  realmPrefix: agency
+  defaultUserPassword: ChangeMe123!
+access:
+  members: []

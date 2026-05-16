@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: control-plane
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      values: |
+        installCRDs: true
+        prometheus:
+          enabled: false
+        startupapicheck:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 20
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - CreateNamespace=true

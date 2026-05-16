@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-https-proxy-config
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  nginx.conf: |
+    worker_processes  auto;
+
+    events {
+      worker_connections  1024;
+    }
+
+    http {
+      resolver kube-dns.kube-system.svc.cluster.local valid=5s ipv6=off;
+
+      server {
+        listen 8443 ssl;
+        server_name localhost keycloak.internal.euroscale.local;
+
+        ssl_certificate     /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+
+        location / {
+          set $keycloak_upstream keycloak-service.keycloak.svc.cluster.local:8080;
+          proxy_pass http://$keycloak_upstream;
+          proxy_set_header Host keycloak.internal.euroscale.local;
+          proxy_set_header X-Forwarded-Host keycloak.internal.euroscale.local;
+          proxy_set_header X-Forwarded-Proto https;
+          proxy_set_header X-Forwarded-Port 443;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+      }
+    }

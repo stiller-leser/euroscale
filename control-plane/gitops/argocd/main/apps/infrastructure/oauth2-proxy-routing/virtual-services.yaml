@@ -1,0 +1,56 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: argocd-internal
+  namespace: oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  hosts:
+    - argocd.internal.euroscale.local
+  gateways:
+    - istio-system/euroscale-internal-gateway
+  http:
+    - route:
+        - destination:
+            host: argocd-server.argocd.svc.cluster.local
+            port:
+              number: 80
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: openbao-internal
+  namespace: oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  hosts:
+    - openbao.internal.euroscale.local
+  gateways:
+    - istio-system/euroscale-internal-gateway
+  http:
+    - route:
+        - destination:
+            host: openbao-oauth2-proxy.oauth2-proxy.svc.cluster.local
+            port:
+              number: 80
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: backstage-internal
+  namespace: oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  hosts:
+    - backstage.internal.euroscale.local
+  gateways:
+    - istio-system/euroscale-internal-gateway
+  http:
+    - route:
+        - destination:
+            host: backstage-oauth2-proxy.oauth2-proxy.svc.cluster.local
+            port:
+              number: 80

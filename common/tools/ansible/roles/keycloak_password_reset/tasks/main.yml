@@ -1,0 +1,61 @@
+---
+- name: Wait for Keycloak admin prerequisites
+  tags: [keycloak, password_reset]
+  k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ keycloak_namespace }}"
+    name: "{{ keycloak_pod_name }}"
+  register: keycloak_pod
+  until: keycloak_pod.resources | length > 0 and keycloak_pod.resources[0].status.phase == "Running"
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Get Keycloak admin credentials
+  tags: [keycloak, password_reset]
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ keycloak_namespace }}"
+    name: "{{ keycloak_admin_secret_name }}"
+  register: keycloak_admin_secret
+  when: keycloak_pod.resources | length > 0
+  failed_when: false
+
+- name: Decode admin credentials
+  set_fact:
+    keycloak_admin_user: "{{ keycloak_admin_secret.resources[0].data.username | b64decode }}"
+    keycloak_admin_pass: "{{ keycloak_admin_secret.resources[0].data.password | b64decode }}"
+  when: keycloak_admin_secret.resources | length > 0
+
+- name: Enforce password reset via kcadm
+  tags: [keycloak, password_reset]
+  when: keycloak_admin_user is defined and keycloak_admin_pass is defined
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - "-n"
+      - "{{ keycloak_namespace }}"
+      - "{{ keycloak_pod_name }}"
+      - --
+      - /bin/bash
+      - -c
+      - |
+        KCADM=/opt/keycloak/bin/kcadm.sh
+        [ -x "${KCADM}" ] || KCADM=kcadm.sh
+        ADMIN_ID=$(${KCADM} config credentials --server http://localhost:8080 --realm master --user {{ keycloak_admin_user }} --password {{ keycloak_admin_pass }} --no-config && ${KCADM} get users -r master -q username=admin --fields id --format csv --noquotes | head -n1)
+        [ -n "${ADMIN_ID}" ] && ${KCADM} update users/${ADMIN_ID} -r master -s "requiredActions=[\"UPDATE_PASSWORD\"]" && ${KCADM} get users/${ADMIN_ID} -r master --fields username,requiredActions --format json
+  register: kcadm_result
+  failed_when: false
+  ignore_errors: true
+
+- name: Report password reset status
+  debug:
+    msg: |
+      {% if kcadm_result is defined and kcadm_result.rc == 0 %}
+      [OK] Keycloak admin password reset enforced
+      {% else %}
+      [WARN] Password reset may have failed - {{ kcadm_result.stderr | default('unknown error') }}
+      {% endif %}

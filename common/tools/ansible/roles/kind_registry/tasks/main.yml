@@ -1,0 +1,86 @@
+---
+- name: Ensure local Docker registry is running
+  tags: [kind_registry, always]
+  when: local_registry_enable | default(true)
+  block:
+    - name: Check if registry container exists
+      community.docker.docker_container_info:
+        name: "{{ local_registry_name }}"
+      register: registry_info
+
+    - name: Remove stale registry container if exists
+      community.docker.docker_container:
+        name: "{{ local_registry_name }}"
+        state: absent
+      when: registry_info.exists and registry_info.container.State.Running != true
+
+    - name: Create and start registry container
+      community.docker.docker_container:
+        name: "{{ local_registry_name }}"
+        image: registry:2
+        state: started
+        restart_policy: always
+        ports:
+          - "127.0.0.1:{{ local_registry_port }}:5000"
+      when: not registry_info.exists or registry_info.container.State.Running != true
+
+    - name: Connect registry to kind network
+      community.docker.docker_network:
+        name: "{{ local_registry_network }}"
+        connected:
+          - "{{ local_registry_name }}"
+        state: present
+      when: local_registry_network | default('kind') not in (registry_info.container.NetworkSettings.Networks | default({}) | list)
+
+- name: Configure registry on kind cluster nodes
+  when: local_registry_configure_on_kind | default(true) and kind_cluster_exists | default(false)
+  block:
+    - name: Get kind cluster nodes
+      command: kind get nodes --name {{ cluster_name }}
+      register: kind_nodes_result
+      changed_when: false
+      failed_when: false
+
+    - name: Configure registry on each node
+      command: |
+        docker exec {{ item }} mkdir -p /etc/containerd/certs.d/localhost:{{ local_registry_port }}
+      loop: "{{ kind_nodes_result.stdout_lines | default([], true) }}"
+      loop_control:
+        label: "{{ item }}"
+      changed_when: false
+      ignore_errors: true
+      when: kind_nodes_result.stdout_lines | length > 0
+
+    - name: Create hosts.toml on each node
+      copy:
+        content: |
+          [host]
+            url = "http://localhost:{{ local_registry_port }}"
+        dest: /tmp/registry-hosts.toml
+        mode: "0644"
+      changed_when: false
+      when: kind_nodes_result.stdout_lines | length > 0
+
+    - name: Copy hosts.toml to each node
+      command: |
+        docker exec -i {{ item }} sh -lc 'cat > /etc/containerd/certs.d/localhost:{{ local_registry_port }}/hosts.toml'
+      loop: "{{ kind_nodes_result.stdout_lines | default([], true) }}"
+      loop_control:
+        label: "{{ item }}"
+      changed_when: false
+      when: kind_nodes_result.stdout_lines | length > 0
+
+- name: Create registry hosting ConfigMap
+  when: local_registry_configmap | default(true)
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: local-registry-hosting
+        namespace: kube-public
+      data:
+        localRegistryHosting.v1: |
+          host: "localhost:{{ local_registry_port }}"
+          help: "https://kind.sigs.k8s.io/repo/localregistry"

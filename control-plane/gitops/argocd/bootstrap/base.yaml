@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: base
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd/app-name: base
+spec:
+  project: control-plane
+  source:
+    repoURL: file:///repo
+    targetRevision: HEAD
+    path: control-plane/gitops/argocd/bootstrap/apps/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

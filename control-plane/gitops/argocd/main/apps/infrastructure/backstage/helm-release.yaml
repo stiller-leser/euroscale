@@ -1,0 +1,238 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: backstage
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: backstage
+    skipCreateNamespace: true
+    chart:
+      name: backstage
+      repository: https://backstage.github.io/charts
+      version: "2.6.1"
+    values:
+      serviceAccount:
+        create: false
+        name: backstage
+
+      backstage:
+        image:
+          registry: localhost:5001
+          repository: backstage-oidc
+          tag: local
+          pullPolicy: Always
+        extraEnvVars:
+          - name: NODE_TLS_REJECT_UNAUTHORIZED
+            value: "0"
+
+        extraEnvVarsSecrets:
+          - backstage-secrets
+        extraVolumes:
+          - name: spire-agent-socket
+            csi:
+              driver: csi.spiffe.io
+              readOnly: true
+        extraVolumeMounts:
+          - name: spire-agent-socket
+            mountPath: /run/spire/sockets
+            readOnly: true
+        extraContainers:
+          - name: keycloak-loopback-proxy
+            image: alpine/socat:1.8.0.0
+            args:
+              - TCP-LISTEN:30843,fork,reuseaddr,bind=127.0.0.1
+              - TCP:keycloak-nodeport.keycloak.svc.cluster.local:443
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 65534
+          - name: keycloak-loopback-proxy-443
+            image: alpine/socat:1.8.0.0
+            args:
+              - TCP-LISTEN:443,fork,reuseaddr,bind=127.0.0.1
+              - TCP:keycloak-nodeport.keycloak.svc.cluster.local:443
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+              runAsNonRoot: false
+              capabilities:
+                add:
+                  - NET_BIND_SERVICE
+
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+
+        appConfig:
+          app:
+            title: Euroscale Developer Portal
+            baseUrl: https://backstage.internal.euroscale.local
+
+          organization:
+            name: Euroscale
+
+          backend:
+            baseUrl: https://backstage.internal.euroscale.local
+            listen:
+              port: 7007
+              host: 0.0.0.0
+            cors:
+              origin: https://backstage.internal.euroscale.local
+              methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+              credentials: true
+            csp:
+              connect-src: ["'self'", "http:", "https:"]
+            database:
+              client: better-sqlite3
+              connection: ":memory:"
+
+          integrations:
+            github:
+              - host: github.com
+                token: ${GITHUB_TOKEN}
+
+          auth:
+            environment: production
+            session:
+              secret: local-dev-backstage-session-secret-change-me
+            providers:
+              oauth2Proxy:
+                signIn:
+                  resolvers:
+                    - resolver: emailLocalPartMatchingUserEntityName
+
+          techdocs:
+            builder: local
+            generator:
+              runIn: docker
+            publisher:
+              type: local
+
+          scaffolder: {}
+
+          catalog:
+            import:
+              entityFilename: catalog-info.yaml
+              pullRequestBranchName: backstage-integration
+            rules:
+              - allow: [Component, API, Resource, ResourceDefinition, System, Domain, Location, User, Group, Template]
+            providers:
+              keycloakOrg:
+                default:
+                  baseUrl: https://keycloak.internal.euroscale.local
+                  realm: euroscale
+                  loginRealm: euroscale
+                  username: ${KEYCLOAK_SYNC_USERNAME}
+                  password: ${KEYCLOAK_SYNC_PASSWORD}
+                  schedule:
+                    frequency: { minutes: 2 }
+                    timeout: { minutes: 1 }
+            locations:
+              - type: file
+                target: /app/catalog-info.yaml
+
+          kubernetes:
+            serviceLocatorMethod:
+              type: multiTenant
+            clusterLocatorMethods:
+              - type: config
+                clusters:
+                  - name: local-kind
+                    title: kind-euroscale
+                    url: https://kubernetes.default.svc
+                    authProvider: serviceAccount
+                    skipTLSVerify: true
+
+          kubernetesIngestor:
+            enabled: true
+            components:
+              enabled: true
+              taskRunner:
+                frequency: 120
+                timeout: 120
+            crossplane:
+              enabled: true
+              xrds:
+                enabled: true
+                ingestAllXRDs: true
+                taskRunner:
+                  frequency: 120
+                  timeout: 120
+            mappings:
+              namespaceModel: default
+              nameModel: name
+
+          templatePostProcessor:
+            enabled: true
+            profiles:
+              minimal-crossplane-claim:
+                removeParameterGroups:
+                  - Crossplane Settings
+                  - Creation Settings
+                removeRequired:
+                  - owner
+            rules:
+              - profile: minimal-crossplane-claim
+                match:
+                  kind: Template
+                  sourceLabel: crossplane
+                  specTypeRegex: "^[a-z0-9.-]+\\.euro\\.scale$"
+
+          crossplane:
+            enablePermissions: true
+            xrds:
+              enabled: true
+            claims:
+              enabled: true
+
+          argocd:
+            # UI link target used by the ArgoCD plugin drawers/tables.
+            # API calls still use the proxy URL from entity annotation (default: /argocd/api).
+            baseUrl: https://argocd.internal.euroscale.local
+            appLocatorMethods: []
+
+          vault:
+            baseUrl: /api/proxy/openbao
+            secretEngine: euroscale
+            host: http://openbao.openbao.svc.cluster.local:8200
+            namespace: root
+            kvVersion: 2
+
+          openbaoRuntimeAuth:
+            mountPath: spire
+            role: backstage
+            spireSocketPath: /run/spire/sockets/spire-agent.sock
+            spireJWTPath: /var/run/secrets/spiffe/jwt-svid.token
+            serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+            refreshSkewSeconds: 60
+            fallbackTokenTtlSeconds: 900
+
+          proxy:
+            endpoints:
+              "/argocd/api":
+                target: http://argocd-server.argocd.svc.cluster.local/api/v1
+                changeOrigin: true
+                headers:
+                  Authorization: ${ARGOCD_AUTH_HEADER}
+              "/agencies-admin":
+                target: http://agencies-admin-ui.backstage.svc.cluster.local:8080
+                changeOrigin: true
+                credentials: require
+
+          permission:
+            enabled: true
+
+      service:
+        type: ClusterIP
+
+      ingress:
+        enabled: false

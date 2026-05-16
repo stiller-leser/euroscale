@@ -1,0 +1,457 @@
+---
+- name: Ensure KCP agencies workspace exists
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    ROOT_DIR="{{ control_plane_root }}"
+    OUT_DIR="${ROOT_DIR}/kubeconfig/kcp"
+    TMP_KUBECONFIG="${OUT_DIR}/.kcp-admin.workspace.tmp.kubeconfig"
+    KCP_NAMESPACE="${KCP_NAMESPACE:-kcp}"
+    KCP_DEPLOYMENT="${KCP_DEPLOYMENT:-kcp}"
+    KCP_SERVICE="${KCP_SERVICE:-kcp}"
+    KCP_WAIT_TIMEOUT_SECONDS="${KCP_WAIT_TIMEOUT_SECONDS:-900}"
+    KCP_KUBECTL_REQUEST_TIMEOUT="${KCP_KUBECTL_REQUEST_TIMEOUT:-5s}"
+    KCP_TENANCY_CRD_WAIT_TIMEOUT_SECONDS="${KCP_TENANCY_CRD_WAIT_TIMEOUT_SECONDS:-300}"
+    KCP_TENANCY_CRD_WAIT_INTERVAL_SECONDS="${KCP_TENANCY_CRD_WAIT_INTERVAL_SECONDS:-2}"
+    WORKSPACE_NAME="${KCP_AGENCIES_WORKSPACE_NAME:-{{ kcp_agencies_workspace_name | default('agencies', true) }}}"
+    WORKSPACE_TYPE="${KCP_AGENCIES_WORKSPACE_TYPE:-{{ kcp_agencies_workspace_type | default('universal', true) }}}"
+
+    mkdir -p "${OUT_DIR}"
+    PF_PID=""
+    PF_LOG="${OUT_DIR}/.kcp-workspace-portforward.log"
+    cleanup() {
+      if [ -n "${PF_PID:-}" ]; then
+        kill "${PF_PID}" >/dev/null 2>&1 || true
+      fi
+      rm -f "${TMP_KUBECONFIG}" "${PF_LOG}"
+    }
+    trap cleanup EXIT
+
+    kubectl -n "${KCP_NAMESPACE}" wait --for=condition=Available "deployment/${KCP_DEPLOYMENT}" --timeout="${KCP_WAIT_TIMEOUT_SECONDS}s" >/dev/null
+
+    kcp_admin_path="$(kubectl -n "${KCP_NAMESPACE}" exec "deployment/${KCP_DEPLOYMENT}" -- sh -lc '
+      for p in \
+        /data/admin.kubeconfig \
+        /root/.kcp/admin.kubeconfig \
+        /home/kcp/.kcp/admin.kubeconfig \
+        /home/nonroot/.kcp/admin.kubeconfig \
+        /.kcp/admin.kubeconfig
+      do
+        if [ -s "$p" ]; then
+          echo "$p"
+          exit 0
+        fi
+      done
+      if command -v find >/dev/null 2>&1; then
+        find /data /root /home -maxdepth 5 -type f -name admin.kubeconfig 2>/dev/null | head -n1
+      fi
+    ')"
+    if [ -z "${kcp_admin_path}" ]; then
+      echo "Unable to locate admin.kubeconfig in KCP deployment ${KCP_DEPLOYMENT}." >&2
+      exit 1
+    fi
+
+    kubectl -n "${KCP_NAMESPACE}" exec "deployment/${KCP_DEPLOYMENT}" -- sh -lc "cat ${kcp_admin_path@Q}" > "${TMP_KUBECONFIG}"
+
+    tenancy_api_ready=false
+    if kubectl --kubeconfig "${TMP_KUBECONFIG}" --request-timeout="${KCP_KUBECTL_REQUEST_TIMEOUT}" get --raw /apis/tenancy.kcp.io >/dev/null 2>&1; then
+      tenancy_api_ready=true
+    fi
+
+    if [ "${tenancy_api_ready}" != "true" ]; then
+      fuser -k 16447/tcp 16448/tcp 16449/tcp 16450/tcp 2>/dev/null || true
+      PF_PORT=""
+      for candidate_port in 16447 16448 16449 16450; do
+        kubectl -n "${KCP_NAMESPACE}" port-forward "service/${KCP_SERVICE}" "${candidate_port}:6443" > "${PF_LOG}" 2>&1 &
+        candidate_pid=$!
+        sleep 1
+
+        if ! kill -0 "${candidate_pid}" >/dev/null 2>&1; then
+          continue
+        fi
+
+        if curl -sk --max-time 2 "https://localhost:${candidate_port}/" >/dev/null 2>&1; then
+          PF_PID="${candidate_pid}"
+          PF_PORT="${candidate_port}"
+          break
+        fi
+
+        kill "${candidate_pid}" >/dev/null 2>&1 || true
+      done
+
+      if [ -n "${PF_PORT}" ] && [ -n "${PF_PID}" ]; then
+        sed -i "s|kcp.internal.euroscale.local:6443|localhost:${PF_PORT}|g" "${TMP_KUBECONFIG}"
+        for cluster in $(kubectl config view --kubeconfig "${TMP_KUBECONFIG}" --raw -o jsonpath='{.clusters[*].name}'); do
+          kubectl config set-cluster "${cluster}" --kubeconfig "${TMP_KUBECONFIG}" --insecure-skip-tls-verify=true >/dev/null
+        done
+
+        tenancy_api_ready=false
+        tenancy_api_deadline=$((SECONDS + KCP_TENANCY_CRD_WAIT_TIMEOUT_SECONDS))
+        while true; do
+          if kubectl --kubeconfig "${TMP_KUBECONFIG}" --request-timeout="${KCP_KUBECTL_REQUEST_TIMEOUT}" get --raw /apis/tenancy.kcp.io >/dev/null 2>&1; then
+            tenancy_api_ready=true
+            break
+          fi
+          if [ "${SECONDS}" -ge "${tenancy_api_deadline}" ]; then
+            break
+          fi
+          sleep "${KCP_TENANCY_CRD_WAIT_INTERVAL_SECONDS}"
+        done
+      fi
+    fi
+
+    if [ "${tenancy_api_ready}" != "true" ]; then
+      echo "Timed out waiting for tenancy.kcp.io API discovery after ${KCP_TENANCY_CRD_WAIT_TIMEOUT_SECONDS}s." >&2
+      exit 1
+    fi
+
+    apply_ok="false"
+    if cat <<YAML | kubectl --kubeconfig "${TMP_KUBECONFIG}" --request-timeout="${KCP_KUBECTL_REQUEST_TIMEOUT}" apply -f - 2>/dev/null; then
+    apiVersion: tenancy.kcp.io/v1alpha1
+    kind: Workspace
+    metadata:
+      name: ${WORKSPACE_NAME}
+    spec:
+      type:
+        name: ${WORKSPACE_TYPE}
+    YAML
+      apply_ok="true"
+    elif cat <<YAML | kubectl --kubeconfig "${TMP_KUBECONFIG}" --request-timeout="${KCP_KUBECTL_REQUEST_TIMEOUT}" apply -f -; then
+    apiVersion: tenancy.kcp.io/v1alpha1
+    kind: Workspace
+    metadata:
+      name: ${WORKSPACE_NAME}
+    spec:
+      type: ${WORKSPACE_TYPE}
+    YAML
+      apply_ok="true"
+    fi
+
+    if [ "${apply_ok}" != "true" ]; then
+      echo "Failed to apply Workspace ${WORKSPACE_NAME}." >&2
+      exit 1
+    fi
+
+    kubectl --kubeconfig "${TMP_KUBECONFIG}" --request-timeout="${KCP_KUBECTL_REQUEST_TIMEOUT}" \
+      get workspaces.tenancy.kcp.io "${WORKSPACE_NAME}" >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: kcp_agencies_workspace_apply
+  changed_when: >-
+    ('created' in (kcp_agencies_workspace_apply.stdout | default('') | lower)) or
+    ('configured' in (kcp_agencies_workspace_apply.stdout | default('') | lower))
+  when: kcp_action == "ensure_agencies_workspace"
+
+- name: Ensure KCP api-syncagent bootstrap exists
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    ROOT_DIR="{{ control_plane_root }}"
+    OUT_DIR="${ROOT_DIR}/kubeconfig/kcp"
+    TMP_KUBECONFIG="${OUT_DIR}/.kcp-admin.syncagent.tmp.kubeconfig"
+    TMP_WORKSPACE_KUBECONFIG="${OUT_DIR}/.kcp-agencies.syncagent.tmp.kubeconfig"
+    KCP_NAMESPACE="${KCP_NAMESPACE:-kcp}"
+    KCP_DEPLOYMENT="${KCP_DEPLOYMENT:-kcp}"
+    KCP_SERVICE="${KCP_SERVICE:-kcp}"
+    KCP_WAIT_TIMEOUT_SECONDS="${KCP_WAIT_TIMEOUT_SECONDS:-900}"
+    WORKSPACE_NAME="${KCP_AGENCIES_WORKSPACE_NAME:-{{ kcp_agencies_workspace_name | default('agencies', true) }}}"
+    APIEXPORT_NAME="${KCP_SYNCAGENT_APIEXPORT_NAME:-{{ kcp_syncagent_apiexport_name | default('agencies.euro.scale', true) }}}"
+    PUBLISHED_RESOURCE_NAME="${KCP_SYNCAGENT_PUBLISHED_RESOURCE_NAME:-{{ kcp_syncagent_published_resource_name | default('publish-agencystackclaims', true) }}}"
+    CUSTOMER_PUBLISHED_RESOURCE_NAME="${KCP_SYNCAGENT_CUSTOMER_PUBLISHED_RESOURCE_NAME:-{{ kcp_syncagent_customer_published_resource_name | default('publish-customerstackclaims', true) }}}"
+    OPENBAO_KV_PATH="${OPENBAO_KCP_SYNCAGENT_KUBECONFIG_PATH:-{{ openbao_kcp_syncagent_kubeconfig_path | default('euroscale/kcp/syncagent-agencies-kubeconfig', true) }}}"
+    KCP_SYNCAGENT_SERVER_BASE="${KCP_SYNCAGENT_SERVER_BASE:-https://kcp.${KCP_NAMESPACE}.svc.cluster.local:6443}"
+    SYNCAGENT_WORKSPACE_NAME="${KCP_SYNCAGENT_WORKSPACE_NAME:-root}"
+    APIEXPORT_WORKSPACE_NAME="${KCP_SYNCAGENT_APIEXPORT_WORKSPACE_NAME:-${SYNCAGENT_WORKSPACE_NAME}}"
+    SYNCAGENT_CRD_WAIT_TIMEOUT_SECONDS="${KCP_SYNCAGENT_CRD_WAIT_TIMEOUT_SECONDS:-600}"
+    SYNCAGENT_CRD_WAIT_INTERVAL_SECONDS="${KCP_SYNCAGENT_CRD_WAIT_INTERVAL_SECONDS:-5}"
+
+    mkdir -p "${OUT_DIR}"
+    PF_PID=""
+    PF_LOG="${OUT_DIR}/.kcp-syncagent-portforward.log"
+    cleanup() {
+      if [ -n "${PF_PID:-}" ]; then
+        kill "${PF_PID}" >/dev/null 2>&1 || true
+      fi
+      rm -f "${TMP_KUBECONFIG}" "${TMP_WORKSPACE_KUBECONFIG}" "${PF_LOG}"
+    }
+    trap cleanup EXIT
+
+    kubectl -n "${KCP_NAMESPACE}" wait --for=condition=Available "deployment/${KCP_DEPLOYMENT}" --timeout="${KCP_WAIT_TIMEOUT_SECONDS}s" >/dev/null
+
+    kcp_admin_path="$(kubectl -n "${KCP_NAMESPACE}" exec "deployment/${KCP_DEPLOYMENT}" -- sh -lc '
+      for p in \
+        /data/admin.kubeconfig \
+        /root/.kcp/admin.kubeconfig \
+        /home/kcp/.kcp/admin.kubeconfig \
+        /home/nonroot/.kcp/admin.kubeconfig \
+        /.kcp/admin.kubeconfig
+      do
+        if [ -s "$p" ]; then
+          echo "$p"
+          exit 0
+        fi
+      done
+      if command -v find >/dev/null 2>&1; then
+        find /data /root /home -maxdepth 5 -type f -name admin.kubeconfig 2>/dev/null | head -n1
+      fi
+    ')"
+
+    if [ -z "${kcp_admin_path}" ]; then
+      echo "Unable to locate admin.kubeconfig in KCP deployment ${KCP_DEPLOYMENT}." >&2
+      exit 1
+    fi
+
+    kubectl -n "${KCP_NAMESPACE}" exec "deployment/${KCP_DEPLOYMENT}" -- sh -lc "cat ${kcp_admin_path@Q}" > "${TMP_KUBECONFIG}"
+    cp "${TMP_KUBECONFIG}" "${TMP_WORKSPACE_KUBECONFIG}"
+
+    kubeconfig_users="$(kubectl config view --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --raw -o jsonpath='{.users[*].name}')"
+    if printf '%s\n' "${kubeconfig_users}" | tr ' ' '\n' | grep -qx 'shard-admin'; then
+      bootstrap_user="shard-admin"
+    else
+      bootstrap_user="$(kubectl config view --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --raw -o jsonpath='{.users[0].name}')"
+    fi
+
+    kubeconfig_clusters="$(kubectl config view --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --raw -o jsonpath='{.clusters[*].name}')"
+    if printf '%s\n' "${kubeconfig_clusters}" | tr ' ' '\n' | grep -qx 'base'; then
+      bootstrap_cluster="base"
+    else
+      bootstrap_cluster="$(kubectl config view --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --raw -o jsonpath='{.clusters[0].name}')"
+    fi
+
+    if [ -z "${bootstrap_user}" ] || [ -z "${bootstrap_cluster}" ]; then
+      echo "Unable to resolve bootstrap user/cluster from KCP admin kubeconfig." >&2
+      exit 1
+    fi
+
+    kubectl config set-context "syncagent-bootstrap" --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --cluster "${bootstrap_cluster}" --user "${bootstrap_user}" >/dev/null
+    kubectl config use-context "syncagent-bootstrap" --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" >/dev/null
+
+    apply_apiexport_binding() {
+      if cat <<YAML | kubectl --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" apply -f - 2>/dev/null; then
+    apiVersion: apis.kcp.io/v1alpha2
+    kind: APIExport
+    metadata:
+      name: ${APIEXPORT_NAME}
+    spec: {}
+    ---
+    apiVersion: apis.kcp.io/v1alpha2
+    kind: APIBinding
+    metadata:
+      name: ${APIEXPORT_NAME}
+    spec:
+      reference:
+        export:
+          name: ${APIEXPORT_NAME}
+    YAML
+        return 0
+      fi
+
+      if cat <<YAML | kubectl --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" apply -f -; then
+    apiVersion: apis.kcp.io/v1alpha1
+    kind: APIExport
+    metadata:
+      name: ${APIEXPORT_NAME}
+    spec: {}
+    ---
+    apiVersion: apis.kcp.io/v1alpha1
+    kind: APIBinding
+    metadata:
+      name: ${APIEXPORT_NAME}
+    spec:
+      reference:
+        export:
+          name: ${APIEXPORT_NAME}
+    YAML
+        return 0
+      fi
+
+      return 1
+    }
+
+    bootstrap_server="$(kubectl config view --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --raw -o jsonpath="{.clusters[?(@.name==\"${bootstrap_cluster}\")].cluster.server}")"
+    bootstrap_base_server="${bootstrap_server%%/clusters/*}"
+    apiexport_workspace_path="root"
+    if [ "${APIEXPORT_WORKSPACE_NAME}" != "root" ]; then
+      apiexport_workspace_path="root:${APIEXPORT_WORKSPACE_NAME}"
+    fi
+    if [ "${bootstrap_base_server}" = "${bootstrap_server}" ]; then
+      direct_workspace_server="${bootstrap_server%/}/clusters/${apiexport_workspace_path}"
+    else
+      direct_workspace_server="${bootstrap_base_server}/clusters/${apiexport_workspace_path}"
+    fi
+    kubectl config set-cluster "${bootstrap_cluster}" --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --server "${direct_workspace_server}" >/dev/null
+
+    apiexport_binding_applied="false"
+    if apply_apiexport_binding; then
+      apiexport_binding_applied="true"
+    else
+      fuser -k 16443/tcp 16444/tcp 16445/tcp 16446/tcp 2>/dev/null || true
+      PF_PORT=""
+      for candidate_port in 16443 16444 16445 16446; do
+        kubectl -n "${KCP_NAMESPACE}" port-forward "service/${KCP_SERVICE}" "${candidate_port}:6443" > "${PF_LOG}" 2>&1 &
+        candidate_pid=$!
+        sleep 1
+
+        if ! kill -0 "${candidate_pid}" >/dev/null 2>&1; then
+          continue
+        fi
+
+        if curl -sk --max-time 2 "https://localhost:${candidate_port}/" >/dev/null 2>&1; then
+          PF_PID="${candidate_pid}"
+          PF_PORT="${candidate_port}"
+          break
+        fi
+
+        kill "${candidate_pid}" >/dev/null 2>&1 || true
+      done
+
+      if [ -z "${PF_PORT}" ] || [ -z "${PF_PID}" ]; then
+        echo "Warning: direct APIExport/APIBinding apply failed and port-forward to service/${KCP_SERVICE}:6443 could not be established. Continuing bootstrap." >&2
+        cat "${PF_LOG}" >&2 || true
+      else
+        workspace_server="https://localhost:${PF_PORT}/clusters/${apiexport_workspace_path}"
+        kubectl config set-cluster "${bootstrap_cluster}" --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --server "${workspace_server}" --insecure-skip-tls-verify=true >/dev/null
+
+        if apply_apiexport_binding; then
+          apiexport_binding_applied="true"
+        fi
+      fi
+    fi
+    if [ "${apiexport_binding_applied}" != "true" ]; then
+      echo "Warning: failed to apply APIExport/APIBinding ${APIEXPORT_NAME} in workspace ${apiexport_workspace_path}. Continuing with syncagent bootstrap." >&2
+    fi
+
+    openbao_pod="$(kubectl -n openbao get pod -l app.kubernetes.io/name=openbao -o jsonpath='{.items[0].metadata.name}')"
+    if [ -z "${openbao_pod}" ]; then
+      echo "OpenBao pod not found; cannot persist syncagent kubeconfig." >&2
+      exit 1
+    fi
+    OPENBAO_ROOT_TOKEN="{{ openbao_root_token | default('', true) }}"
+    if [ -z "${OPENBAO_ROOT_TOKEN}" ]; then
+      OPENBAO_ROOT_TOKEN="${VAULT_TOKEN:-}"
+    fi
+    if [ -z "${OPENBAO_ROOT_TOKEN}" ] && [ -r "${ROOT_DIR}/scripts/openbao-init.log" ]; then
+      OPENBAO_ROOT_TOKEN="$(python3 - <<'PY'
+    import json
+    import pathlib
+
+    path = pathlib.Path("scripts/openbao-init.log")
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+    print(str(data.get("root_token", "")).strip())
+    PY
+    )"
+    fi
+    if [ -z "${OPENBAO_ROOT_TOKEN}" ]; then
+      echo "OpenBao root token is unavailable; cannot persist syncagent kubeconfig." >&2
+      exit 1
+    fi
+
+    syncagent_base_server="${KCP_SYNCAGENT_SERVER_BASE%%/clusters/*}"
+    syncagent_workspace_path="root"
+    if [ "${SYNCAGENT_WORKSPACE_NAME}" != "root" ]; then
+      syncagent_workspace_path="root:${SYNCAGENT_WORKSPACE_NAME}"
+    fi
+    syncagent_workspace_server="${syncagent_base_server%/}/clusters/${syncagent_workspace_path}"
+    kubectl config set-cluster "${bootstrap_cluster}" --kubeconfig "${TMP_WORKSPACE_KUBECONFIG}" --server "${syncagent_workspace_server}" >/dev/null
+
+    kubeconfig_b64="$(base64 -w0 < "${TMP_WORKSPACE_KUBECONFIG}")"
+    kubectl -n openbao exec "${openbao_pod}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="${OPENBAO_ROOT_TOKEN}" \
+      bao kv put "${OPENBAO_KV_PATH}" \
+      "kubeconfig_b64=${kubeconfig_b64}" >/dev/null
+
+    # Force ExternalSecret to re-sync now that the OpenBao path exists.
+    kubectl -n "${KCP_NAMESPACE}" annotate externalsecret/kcp-syncagent-kubeconfig \
+      "force-sync=$(date +%s)" --overwrite >/dev/null 2>&1 || true
+
+    # Trigger ArgoCD refresh and proactively ensure syncagent manifests exist.
+    kubectl -n "${ARGOCD_NAMESPACE:-argocd}" annotate application/kcp \
+      "argocd.argoproj.io/refresh=hard" --overwrite >/dev/null 2>&1 || true
+    kubectl apply -f "${ROOT_DIR}/gitops/argocd/main/apps/infrastructure/kcp/syncagent-rbac-agencies.yaml" >/dev/null 2>&1 || true
+    kubectl -n "${KCP_NAMESPACE}" apply -f "${ROOT_DIR}/gitops/argocd/main/apps/infrastructure/kcp/syncagent-release.yaml" >/dev/null 2>&1 || true
+
+    # Give ESO a short window to materialize the kubeconfig secret.
+    syncagent_secret_deadline=$((SECONDS + 180))
+    while true; do
+      if kubectl -n "${KCP_NAMESPACE}" get secret kcp-syncagent-kubeconfig >/dev/null 2>&1; then
+        break
+      fi
+      if [ "${SECONDS}" -ge "${syncagent_secret_deadline}" ]; then
+        echo "Timed out waiting for secret kcp-syncagent-kubeconfig; continuing with CRD wait." >&2
+        break
+      fi
+      sleep 5
+    done
+
+    crd_deadline=$((SECONDS + SYNCAGENT_CRD_WAIT_TIMEOUT_SECONDS))
+    while true; do
+      if kubectl get crd publishedresources.syncagent.kcp.io >/dev/null 2>&1; then
+        break
+      fi
+      if [ "${SECONDS}" -ge "${crd_deadline}" ]; then
+        echo "Timed out waiting for publishedresources.syncagent.kcp.io CRD. Ensure api-syncagent chart installation succeeded." >&2
+        exit 1
+      fi
+      sleep "${SYNCAGENT_CRD_WAIT_INTERVAL_SECONDS}"
+    done
+
+    if kubectl get crd agencystacks.euro.scale >/dev/null 2>&1; then
+      cat <<YAML | kubectl apply -f -
+    apiVersion: syncagent.kcp.io/v1alpha1
+    kind: PublishedResource
+    metadata:
+      name: ${PUBLISHED_RESOURCE_NAME}
+    spec:
+      resource:
+        kind: AgencyStack
+        apiGroup: euro.scale
+        versions:
+          - v1alpha1
+      synchronization:
+        enabled: true
+    YAML
+    else
+      kubectl delete publishedresource.syncagent.kcp.io "${PUBLISHED_RESOURCE_NAME}" --ignore-not-found >/dev/null 2>&1 || true
+      echo "Skipping PublishedResource ${PUBLISHED_RESOURCE_NAME}: CRD agencystacks.euro.scale not found." >&2
+    fi
+
+    if kubectl get crd customerstacks.euro.scale >/dev/null 2>&1; then
+      cat <<YAML | kubectl apply -f -
+    apiVersion: syncagent.kcp.io/v1alpha1
+    kind: PublishedResource
+    metadata:
+      name: ${CUSTOMER_PUBLISHED_RESOURCE_NAME}
+    spec:
+      resource:
+        kind: CustomerStack
+        apiGroup: euro.scale
+        versions:
+          - v1alpha1
+      synchronization:
+        enabled: true
+    YAML
+    else
+      kubectl delete publishedresource.syncagent.kcp.io "${CUSTOMER_PUBLISHED_RESOURCE_NAME}" --ignore-not-found >/dev/null 2>&1 || true
+      echo "Skipping PublishedResource ${CUSTOMER_PUBLISHED_RESOURCE_NAME}: CRD customerstacks.euro.scale not found." >&2
+    fi
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: kcp_syncagent_bootstrap_apply
+  changed_when: >-
+    ('created' in (kcp_syncagent_bootstrap_apply.stdout | default('') | lower)) or
+    ('configured' in (kcp_syncagent_bootstrap_apply.stdout | default('') | lower))
+  no_log: "{{ kcp_syncagent_bootstrap_no_log | default(true) }}"
+  when: kcp_action == "ensure_syncagent_bootstrap"
+
+- name: Ensure kcp_action is recognized
+  ansible.builtin.assert:
+    that:
+      - kcp_action in ["ensure_agencies_workspace", "ensure_syncagent_bootstrap"]
+    fail_msg: "Unknown kcp_action: {{ kcp_action }}"

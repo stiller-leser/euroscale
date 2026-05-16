@@ -1,0 +1,12 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  tasks:
+    - name: Import openbao role
+      import_role:
+        name: openbao
+
+    - name: Verify openbao role executed
+      ansible.builtin.debug:
+        msg: "openbao role executed with openbao_action"

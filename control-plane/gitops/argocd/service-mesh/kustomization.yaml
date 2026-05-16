@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - istio.yaml
+  - istio-gateway.yaml
+  - istio-mtls.yaml
+  - keycloak-routing.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd
+  app.euroscale.io/stage: service-mesh

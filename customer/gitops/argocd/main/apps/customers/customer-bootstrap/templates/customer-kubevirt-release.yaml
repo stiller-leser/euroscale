@@ -1,0 +1,30 @@
+{{- if and (eq (default "local-vcluster" .Values.clusterClass) "local-vcluster") (default true .Values.addons.kubevirt.enabled) }}
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: {{ include "customer.kubevirtReleaseName" . }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+    euro.scale/customer: {{ .Values.customerName | quote }}
+spec:
+  providerConfigRef:
+    name: {{ include "customer.crossplaneProviderConfigName" . }}
+  rollbackLimit: 3
+  forProvider:
+    namespace: {{ default "kubevirt" .Values.addons.kubevirt.namespace }}
+    skipCreateNamespace: false
+    chart:
+      name: {{ default "kubevirt" .Values.addons.kubevirt.chart.name | quote }}
+      repository: {{ required "addons.kubevirt.chart.repository is required" .Values.addons.kubevirt.chart.repository | quote }}
+{{- if .Values.addons.kubevirt.chart.version }}
+      version: {{ .Values.addons.kubevirt.chart.version | quote }}
+{{- end }}
+{{- with .Values.addons.kubevirt.values }}
+    values:
+{{ toYaml . | nindent 6 }}
+{{- end }}
+{{- end }}

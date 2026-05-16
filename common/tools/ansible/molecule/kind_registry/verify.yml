@@ -1,0 +1,42 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    local_registry_enable: true
+    local_registry_name: kind-registry
+    local_registry_port: "5001"
+    local_registry_network: kind
+  tasks:
+    - name: Import kind_registry role
+      import_role:
+        name: kind_registry
+
+    - name: Verify docker is available
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+      changed_when: false
+      register: docker_ps
+
+    - name: Verify kind is available
+      ansible.builtin.command:
+        argv:
+          - kind
+          - get
+          - clusters
+      changed_when: false
+      register: kind_get_clusters
+
+    - name: Assert Docker is accessible
+      ansible.builtin.assert:
+        that:
+          - docker_ps.rc == 0
+        fail_msg: "Docker is not accessible"
+
+    - name: Assert Kind is accessible
+      ansible.builtin.assert:
+        that:
+          - kind_get_clusters.rc == 0
+        fail_msg: "Kind is not accessible"

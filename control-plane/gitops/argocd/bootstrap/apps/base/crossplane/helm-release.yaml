@@ -1,0 +1,134 @@
+---
+# ConfigMap mit Helm Values für Crossplane
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crossplane-helm-values
+  namespace: crossplane-system
+data:
+  values.yaml: |
+    # Crossplane Configuration
+    replicas: 1
+    
+    deploymentStrategy: Recreate
+    
+    resourcesCrossplane:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    
+    # Package Manager
+    packageManager:
+      enabled: true
+    
+    # RBAC
+    rbacManager:
+      enabled: true
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+---
+# ServiceAccount für Crossplane Installer
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: crossplane-installer
+  namespace: crossplane-system
+---
+# ClusterRole für Installation
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane-installer
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crossplane-installer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: crossplane-installer
+subjects:
+- kind: ServiceAccount
+  name: crossplane-installer
+  namespace: crossplane-system
+---
+# Job zur Installation von Crossplane via Helm
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: install-crossplane
+  namespace: crossplane-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      serviceAccountName: crossplane-installer
+      restartPolicy: OnFailure
+      containers:
+      - name: helm
+        image: alpine/helm:3.13.3
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Installing Crossplane..."
+
+          # Install kubectl for release lock cleanup and readiness checks.
+          apk add --no-cache kubectl
+          
+          # Crossplane Helm Repo
+          helm repo add crossplane-stable https://charts.crossplane.io/stable
+          helm repo update
+
+          # Recover from stale pending Helm operations.
+          for status in pending-install pending-upgrade pending-rollback; do
+            names="$(kubectl -n crossplane-system get secret -l owner=helm,name=crossplane,status=${status} -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' || true)"
+            if [ -n "${names}" ]; then
+              echo "Deleting stale Helm release secrets (${status}): ${names}"
+              kubectl -n crossplane-system delete secret ${names}
+            fi
+          done
+          
+          # Install Crossplane
+          helm upgrade --install crossplane \
+            crossplane-stable/crossplane \
+            --namespace crossplane-system \
+            --create-namespace \
+            --values /config/values.yaml \
+            --wait \
+            --timeout 10m
+          
+          echo "Crossplane installed successfully!"
+          
+          # Warte bis Crossplane bereit ist
+          kubectl wait --for=condition=Available deployment/crossplane \
+            -n crossplane-system --timeout=300s
+          
+          echo "Crossplane is ready!"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: crossplane-helm-values

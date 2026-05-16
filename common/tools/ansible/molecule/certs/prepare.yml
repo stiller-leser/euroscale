@@ -1,0 +1,87 @@
+---
+- name: Prepare
+  hosts: molecule-test
+  gather_facts: yes
+  tasks:
+    - name: Install Python3 and helper packages
+      raw: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip curl
+      become: true
+      changed_when: false
+
+    - name: Install pytest for test verification
+      pip:
+        name: pytest
+        executable: pip3
+      become: true
+      changed_when: false
+      ignore_errors: true
+
+    - name: Create mock kubectl binary
+      copy:
+        dest: /usr/local/bin/kubectl
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          case "$1" in
+            version|--version|-v) echo '{"clientVersion":{"major":"1","minor":"28"}}'; exit 0 ;;
+            get|describe|apply|delete|create) echo '{"kind":"Status"}'; exit 0 ;;
+            cluster-info) echo "Kubernetes cluster at mock server"; exit 0 ;;
+            auth|authenticate-oauth2) echo "fake-token-12345"; exit 0 ;;
+            *) echo "kubectl: $@" >&2; exit 0 ;;
+          esac
+      become: true
+
+    - name: Create mock bao (OpenBao) binary
+      copy:
+        dest: /usr/local/bin/bao
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          case "$1" in
+            status) echo '{"sealed":false,"initialized":true,"standby":false}'; exit 0 ;;
+            secrets)
+              case "$2" in
+                list) echo '{"data":{"keys":["euroscale/","agencies/","kcp/"]}}'; exit 0 ;;
+                get) echo '{"data":{"data":{"password":"mock-pass","token":"mock-token"}}}'; exit 0 ;;
+                put) echo '{"data":{}}'; exit 0 ;;
+              esac
+              ;;
+            operator) echo '{"mode":"mock"}'; exit 0 ;;
+            *) echo "bao: $@" >&2; exit 0 ;;
+          esac
+      become: true
+
+    - name: Create mock kind binary
+      copy:
+        dest: /usr/local/bin/kind
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          case "$1" in
+            get) echo "kind"; exit 0 ;;
+            create|load|export) echo "kind: $@"; exit 0 ;;
+            *) echo "kind: $@" >&2; exit 0 ;;
+          esac
+      become: true
+
+    - name: Create mock docker binary
+      copy:
+        dest: /usr/local/bin/docker
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          case "$1" in
+            ps) echo "CONTAINER ID   IMAGE"; exit 0 ;;
+            inspect) echo '{"State":{"Running":true}}'; exit 0 ;;
+            exec|run|build) echo "docker: $@"; exit 0 ;;
+            *) echo "docker: $@" >&2; exit 0 ;;
+          esac
+      become: true
+
+    - name: Create symlink for /usr/bin paths
+      file:
+        path: /usr/bin/kubectl
+        src: /usr/local/bin/kubectl
+        state: link
+      become: true
+      ignore_errors: true

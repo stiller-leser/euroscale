@@ -1,0 +1,68 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kine
+  namespace: kcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kine
+  template:
+    metadata:
+      labels:
+        app: kine
+    spec:
+      containers:
+      - name: kine
+        image: rancher/kine:v0.14.9
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          kine --endpoint="${KINE_ENDPOINT}" --listen-address=tcp://0.0.0.0:2379
+        env:
+        - name: KINE_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: kcp-postgres-credentials
+              key: endpoint
+        ports:
+        - name: etcd
+          containerPort: 2379
+        livenessProbe:
+          tcpSocket:
+            port: 2379
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 2379
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kine
+  namespace: kcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  selector:
+    app: kine
+  ports:
+  - name: etcd
+    port: 2379
+    targetPort: 2379

@@ -1,0 +1,6 @@
+---
+openbao_namespace: openbao
+openbao_address: "http://openbao.openbao.svc.cluster.local:8200"
+openbao_mount_kv: secret
+openbao_mount_agencies: agencies
+openbao_bootstrap_wait_ready: true

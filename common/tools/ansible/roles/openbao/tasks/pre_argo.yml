@@ -1,0 +1,157 @@
+---
+- name: Wait for OpenBao pod readiness before pre-argo bootstrap
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - wait
+      - --for=condition=ready
+      - pod
+      - -l
+      - app.kubernetes.io/name=openbao
+      - -n
+      - openbao
+      - --timeout=300s
+  args:
+    chdir: "{{ control_plane_root }}"
+  changed_when: false
+  failed_when: false
+
+- name: Run OpenBao pre-argo bootstrap
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+
+    bao() {
+      kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" bao "$@"
+    }
+
+    ensure_mount() {
+      local mount="$1"
+      if ! bao secrets list -format=json | grep -q "\"${mount}/\""; then
+        bao secrets enable -path="${mount}" kv-v2 >/dev/null
+      fi
+    }
+
+    kv_put_if_absent() {
+      local path="$1"
+      shift
+      if bao kv get -format=json "${path}" >/dev/null 2>&1; then
+        return 0
+      fi
+      bao kv put "${path}" "$@" >/dev/null
+    }
+
+    random_alnum() {
+      local len="$1"
+      local raw
+      raw="$(openssl rand -hex 64)"
+      printf '%s' "${raw:0:$len}"
+    }
+
+    ensure_mount euroscale
+    ensure_mount agencies
+
+    keycloak_db_pass="$(random_alnum 24)"
+    kcp_token="$(random_alnum 24)"
+    kcp_password="$(random_alnum 24)"
+
+    kv_put_if_absent "euroscale/cnpg/superuser" "username=postgres" "password=$(random_alnum 24)"
+    kv_put_if_absent "euroscale/keycloak/postgres" "username=keycloak" "password=${keycloak_db_pass}" "host=keycloak-db-rw.cnpg.svc.cluster.local" "database=keycloak"
+    kv_put_if_absent "euroscale/spire/postgres" "username=spire" "password=$(random_alnum 24)"
+    kv_put_if_absent "euroscale/keycloak/admin" "username=admin" "password=$(random_alnum 24)"
+    kv_put_if_absent "euroscale/keycloak/backstage-sync" "username=${KEYCLOAK_BACKSTAGE_SYNC_USERNAME:-backstage-sync}" "password=${KEYCLOAK_BACKSTAGE_SYNC_PASSWORD:-backstage-sync-local-secret}"
+    kv_put_if_absent "euroscale/argocd/admin" "username=admin" "password=$(random_alnum 24)"
+    kv_put_if_absent "euroscale/argocd/oidc-client" \
+      "client_id=argocd" \
+      "client_secret=${KEYCLOAK_ARGOCD_CLIENT_SECRET:-argocd-local-secret}"
+    kv_put_if_absent "euroscale/backstage" "keycloak_client_secret=${KEYCLOAK_BACKSTAGE_CLIENT_SECRET:-backstage-local-secret}" "argocd_api_token="
+    kv_put_if_absent "euroscale/oauth2-proxy/openbao" \
+      "client_id=${OPENBAO_OAUTH2_CLIENT_ID:-openbao-proxy}" \
+      "client_secret=${KEYCLOAK_OPENBAO_PROXY_CLIENT_SECRET:-openbao-proxy-local-secret}" \
+      "cookie_secret=${OPENBAO_OAUTH2_COOKIE_SECRET:-$(random_alnum 32)}"
+    kv_put_if_absent "euroscale/oauth2-proxy/backstage" \
+      "client_id=${BACKSTAGE_OAUTH2_CLIENT_ID:-backstage-proxy}" \
+      "client_secret=${KEYCLOAK_BACKSTAGE_PROXY_CLIENT_SECRET:-backstage-proxy-local-secret}" \
+      "cookie_secret=${BACKSTAGE_OAUTH2_COOKIE_SECRET:-$(random_alnum 32)}"
+    kv_put_if_absent "euroscale/kcp/config" "server_url=https://kcp.kcp.svc.cluster.local:6443" "token=${kcp_token}"
+    kv_put_if_absent "euroscale/kcp/root-kubeconfig" \
+      "server=https://kcp.kcp.svc.cluster.local:6443" \
+      "config={\"bearerToken\":\"${kcp_token}\",\"tlsClientConfig\":{\"insecure\":true}}"
+    kv_put_if_absent "euroscale/kcp/postgres" "username=kcp" "password=${kcp_password}" "host=kcp-db-rw.cnpg.svc.cluster.local" "database=kcp" "endpoint=postgres://kcp:${kcp_password}@kcp-db-rw.cnpg.svc.cluster.local:5432/kcp?sslmode=disable"
+
+    oidc_ca="${KEYCLOAK_OIDC_CA_FILE:-{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt}"
+    oidc_ca_key="${KEYCLOAK_OIDC_CA_KEY_FILE:-{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key}"
+    if [ -s "${oidc_ca}" ] && [ -s "${oidc_ca_key}" ]; then
+      bao kv put "euroscale/keycloak/oidc-ca" \
+        "ca_crt=$(cat "${oidc_ca}")" \
+        "tls_crt=$(cat "${oidc_ca}")" \
+        "tls_key=$(cat "${oidc_ca_key}")" >/dev/null
+    fi
+
+    bao write sys/policies/acl/external-secrets "policy=$(cat {{ control_plane_root }}/gitops/argocd/bootstrap/apps/secrets-management/openbao/policies/external-secrets.hcl)" >/dev/null
+    bao write sys/policies/acl/openbao-admin "policy=$(cat {{ control_plane_root }}/gitops/argocd/bootstrap/apps/secrets-management/openbao/policies/openbao-admin.hcl)" >/dev/null
+    bao write sys/policies/acl/backstage-openbao "policy=$(cat {{ control_plane_root }}/gitops/argocd/bootstrap/apps/secrets-management/openbao/policies/backstage-openbao.hcl)" >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: false
+
+- name: Wait for external-secrets namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lookup('ansible.builtin.env', 'ESO_NAMESPACE') | default('external-secrets', true) }}"
+  register: eso_namespace
+  retries: 120
+  delay: 5
+  until: (eso_namespace.resources | length) > 0
+
+- name: Wait for external-secrets service account
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ServiceAccount
+    namespace: "{{ lookup('ansible.builtin.env', 'ESO_NAMESPACE') | default('external-secrets', true) }}"
+    name: external-secrets
+  register: eso_service_account
+  retries: 120
+  delay: 5
+  until: (eso_service_account.resources | length) > 0
+
+- name: Configure OpenBao kubernetes auth for External Secrets
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+
+    bao() {
+      kubectl -n openbao exec "${pod}" -- \
+        env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+        bao "$@"
+    }
+
+    if ! bao auth list -format=json | grep -q '"kubernetes/"'; then
+      bao auth enable kubernetes >/dev/null
+    fi
+
+    k8s_ca="$(kubectl -n openbao exec "${pod}" -- cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)"
+
+    bao write auth/kubernetes/config \
+      kubernetes_host="https://kubernetes.default.svc:443" \
+      kubernetes_ca_cert="${k8s_ca}" >/dev/null
+
+    bao write auth/kubernetes/role/external-secrets \
+      bound_service_account_names=external-secrets \
+      bound_service_account_namespaces="{{ lookup('ansible.builtin.env', 'ESO_NAMESPACE') | default('external-secrets', true) }}" \
+      policies=external-secrets \
+      ttl=1h >/dev/null
+
+    bao write auth/kubernetes/role/backstage \
+      bound_service_account_names=backstage \
+      bound_service_account_namespaces=backstage \
+      policies=backstage-openbao \
+      ttl=15m >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true

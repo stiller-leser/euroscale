@@ -1,0 +1,67 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    control_plane_root: /tmp/euroscale
+    certs_target: keycloak-oidc
+    certs_force: false
+  tasks:
+    - name: Import certs role
+      import_role:
+        name: certs
+
+    - name: Verify certs directory exists
+      ansible.builtin.stat:
+        path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs"
+      register: certs_dir_stat
+
+    - name: Verify CA private key exists
+      ansible.builtin.stat:
+        path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key"
+      register: ca_key_stat
+
+    - name: Verify CA certificate exists
+      ansible.builtin.stat:
+        path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt"
+      register: ca_crt_stat
+
+    - name: Verify CA private key is valid RSA
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - rsa
+          - -in
+          - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key"
+          - -check
+          - -noout
+      changed_when: false
+      register: ca_key_check
+
+    - name: Verify CA certificate is valid
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt"
+          - -noout
+          - -text
+      changed_when: false
+      register: ca_crt_check
+
+    - name: Assert certs directory created
+      ansible.builtin.assert:
+        that:
+          - certs_dir_stat.stat.exists
+          - certs_dir_stat.stat.isdir
+        fail_msg: "Certs directory not created"
+
+    - name: Assert CA keys and certificates created
+      ansible.builtin.assert:
+        that:
+          - ca_key_stat.stat.exists
+          - ca_crt_stat.stat.exists
+          - ca_key_check.rc == 0
+          - ca_crt_check.rc == 0
+        fail_msg: "CA keys/certificates not properly created"

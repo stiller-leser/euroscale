@@ -1,0 +1,83 @@
+agencyName: agency-placeholder
+customerName: customer-placeholder
+workspacePath: root:agencies
+clusterClass: local-vcluster
+targetClusterName: in-cluster
+targetNamespace: argocd
+
+provider:
+  type: generic
+
+access:
+  members: []
+
+argocd:
+  baseUrl: https://argocd.internal.euroscale.local
+  applicationName: ""
+
+oauth2Proxy:
+  clientId: backstage-proxy
+  clientSecret: backstage-proxy-local-secret
+  cookieSecret: iiNB7pyPCJguy9YT8VR21LiSTe2n2H4x
+  allowedRole: agencies-admin
+
+keycloak:
+  host: keycloak.internal.euroscale.local
+  realmPrefix: agency
+
+backstage:
+  chartVersion: "2.6.1"
+  image:
+    registry: localhost:5001
+    repository: backstage-oidc
+    tag: local
+    pullPolicy: Always
+
+vcluster:
+  chartVersion: ""
+  values: {}
+
+crossplane:
+  chartVersion: "1.16.0"
+  values: {}
+
+addons:
+  kubevirt:
+    enabled: true
+    namespace: kubevirt
+    chart:
+      repository: https://kubevirt.github.io/helm-charts/
+      name: kubevirt
+      version: ""
+    values: {}
+  kubeovn:
+    enabled: true
+    namespace: kube-system
+    chart:
+      repository: https://kubeovn.github.io/kube-ovn/
+      name: kube-ovn
+      version: ""
+    values: {}
+
+network:
+  interconnect:
+    enabled: true
+    mode: submariner
+    cableDriver: wireguard
+    globalnet: false
+    submariner:
+      enabled: true
+      namespace: submariner-operator
+      chart:
+        repository: https://submariner-io.github.io/submariner-charts/charts
+        name: submariner-operator
+        version: ""
+      values: {}
+    autoJoin:
+      enabled: false
+      subctlImage: quay.io/submariner/subctl:0.17.0
+      brokerInfoSecretRef:
+        name: submariner-broker-info
+        key: broker-info.subm
+      clusterCIDR: ""
+      serviceCIDR: ""

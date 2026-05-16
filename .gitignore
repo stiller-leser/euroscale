@@ -1,0 +1,50 @@
+# Terraform / OpenTofu
+control-plane/terraform/argocd-apps/.terraform
+control-plane/terraform/argocd-bootstrap/.terraform
+control-plane/terraform/cluster-and-base/.terraform
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+.terraform.tfstate.lock.info
+*.backup
+.tofu/
+
+# OpenBao Secrets (CRITICAL - niemals committen!)
+openbao-init.log
+*.unseal
+*.root-token
+
+#keycloak certs
+control-plane/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/*
+control-plane/gitops/argocd/bootstrap/apps/infrastructure/istio/certs/*
+
+#Node
+node_modules/
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Podman / Docker
+*.sock

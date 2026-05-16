@@ -1,0 +1,18 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: keycloak-internal
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  hosts:
+    - keycloak.internal.euroscale.local
+  gateways:
+    - istio-system/euroscale-internal-gateway
+  http:
+    - route:
+        - destination:
+            host: keycloak-service.keycloak.svc.cluster.local
+            port:
+              number: 8080

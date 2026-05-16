@@ -1,0 +1,233 @@
+---
+- name: Ensure local kind registry exists
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    running="$(docker inspect -f '{{ '{{.State.Running}}' }}' "${LOCAL_REGISTRY_NAME:-kind-registry}" 2>/dev/null || true)"
+    if [ "${running}" != "true" ]; then
+      docker rm -f "${LOCAL_REGISTRY_NAME:-kind-registry}" >/dev/null 2>&1 || true
+      docker run -d --restart=always \
+        -p "127.0.0.1:${LOCAL_REGISTRY_PORT:-5001}:5000" \
+        --name "${LOCAL_REGISTRY_NAME:-kind-registry}" \
+        registry:2 >/dev/null
+    fi
+
+    docker network connect "${KIND_NETWORK:-kind}" "${LOCAL_REGISTRY_NAME:-kind-registry}" >/dev/null 2>&1 || true
+
+    if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME:-euroscale}"; then
+      while IFS= read -r node; do
+        [ -z "${node}" ] && continue
+        node_running="$(docker inspect -f '{{ '{{.State.Running}}' }}' "${node}" 2>/dev/null || true)"
+        if [ "${node_running}" != "true" ]; then
+          echo "Skipping registry hosts.toml update for non-running kind node: ${node}" >&2
+          continue
+        fi
+        docker exec "${node}" mkdir -p "/etc/containerd/certs.d/localhost:${LOCAL_REGISTRY_PORT:-5001}"
+        printf '%s\n' \
+          "server = \"http://${LOCAL_REGISTRY_NAME:-kind-registry}:5000\"" \
+          "[host.\"http://${LOCAL_REGISTRY_NAME:-kind-registry}:5000\"]" \
+          "  capabilities = [\"pull\", \"resolve\"]" \
+          | docker exec -i "${node}" sh -lc "cat > /etc/containerd/certs.d/localhost:${LOCAL_REGISTRY_PORT:-5001}/hosts.toml"
+      done < <(kind get nodes --name "${CLUSTER_NAME:-euroscale}")
+    fi
+
+  args:
+    chdir: "{{ control_plane_root }}"
+    executable: /bin/bash
+  environment: "{{ euroscale_env }}"
+  when:
+    - cluster_action == "ensure_registry"
+    - cluster_type == "kind"
+
+- name: Check if Kubernetes API is reachable
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - cluster-info
+  register: cluster_info_check
+  changed_when: false
+  failed_when: false
+  when:
+    - cluster_action == "ensure_registry"
+    - cluster_type == "kind"
+
+- name: Publish kind local registry hosting ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: local-registry-hosting
+        namespace: kube-public
+      data:
+        localRegistryHosting.v1: |
+          host: "localhost:{{ local_registry_port }}"
+          help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
+  when:
+    - cluster_action == "ensure_registry"
+    - cluster_type == "kind"
+    - cluster_info_check.rc == 0
+
+- name: Check if kind cluster already exists
+  ansible.builtin.command:
+    argv:
+      - kind
+      - get
+      - clusters
+  register: kind_clusters_check
+  changed_when: false
+  when:
+    - cluster_action == "create_kind"
+    - cluster_type == "kind"
+
+- name: Set kind_cluster_exists fact
+  ansible.builtin.set_fact:
+    kind_cluster_exists: "{{ cluster_name in kind_clusters_check.stdout_lines }}"
+  when:
+    - cluster_action == "create_kind"
+    - cluster_type == "kind"
+
+- name: Create kind cluster and configure hostname injection
+  when:
+    - cluster_action == "create_kind"
+    - cluster_type == "kind"
+  block:
+    - name: Render kind cluster config from template
+      ansible.builtin.template:
+        src: kind-cluster.yaml.j2
+        dest: /tmp/kind-cluster-{{ cluster_name }}.yaml
+        mode: "0644"
+
+    - name: Create kind cluster from rendered config
+      ansible.builtin.command:
+        argv:
+          - kind
+          - create
+          - cluster
+          - --config
+          - /tmp/kind-cluster-{{ cluster_name }}.yaml
+          - --retain
+      args:
+        chdir: "{{ control_plane_root }}"
+      when: not kind_cluster_exists
+
+    - name: Export kind kubeconfig
+      ansible.builtin.command:
+        argv:
+          - kind
+          - export
+          - kubeconfig
+          - --name
+          - "{{ cluster_name }}"
+      args:
+        chdir: "{{ control_plane_root }}"
+
+    - name: Get kind control-plane node name
+      ansible.builtin.command:
+        argv:
+          - kind
+          - get
+          - nodes
+          - --name
+          - "{{ cluster_name }}"
+      register: kind_nodes_cmd
+      changed_when: false
+
+    - name: Select control-plane node
+      ansible.builtin.set_fact:
+        kind_control_plane_node: >-
+          {{
+            (kind_nodes_cmd.stdout_lines | select('search', 'control-plane') | list | first)
+            | default('', true)
+          }}
+
+    - name: Ensure control-plane node was found
+      ansible.builtin.assert:
+        that:
+          - kind_control_plane_node | length > 0
+        fail_msg: "No control-plane node found for cluster {{ cluster_name }}"
+
+    - name: Get kind network gateway IP
+      ansible.builtin.shell: |
+        docker network inspect "{{ kind_network }}" --format \
+          '{{ '{{(index .IPAM.Config 0).Gateway}}' }}' 2>/dev/null || echo "172.18.0.1"
+      args:
+        executable: /bin/bash
+      register: kind_gateway_ip_cmd
+      changed_when: false
+
+    - name: Set kind gateway IP fact
+      ansible.builtin.set_fact:
+        kind_gateway_ip: "{{ kind_gateway_ip_cmd.stdout | trim }}"
+
+    - name: Check current Keycloak hostname mapping in control-plane
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ kind_control_plane_node }}"
+          - sh
+          - -lc
+          - "getent hosts {{ keycloak_host | default('keycloak.internal.euroscale.local') }} | awk '{print $1}' | head -n1"
+      register: keycloak_host_current_ip
+      changed_when: false
+      failed_when: false
+
+    - name: Determine if Keycloak hostname injection is needed
+      ansible.builtin.set_fact:
+        kind_keycloak_hostname_needs_injection: >-
+          {{
+            (keycloak_host_current_ip.stdout | default('') | trim) != kind_gateway_ip
+          }}
+
+    - name: Inject Keycloak hostname into control-plane /etc/hosts
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ kind_control_plane_node }}"
+          - sh
+          - -lc
+          - >
+            tmp=$(mktemp);
+            awk '$2 != "{{ keycloak_host | default('keycloak.internal.euroscale.local') }}" { print }' /etc/hosts > "${tmp}";
+            printf '%s %s\n' '{{ kind_gateway_ip }}' '{{ keycloak_host | default('keycloak.internal.euroscale.local') }}' >> "${tmp}";
+            cat "${tmp}" > /etc/hosts;
+            rm -f "${tmp}"
+      when: kind_keycloak_hostname_needs_injection
+      changed_when: true
+
+    - name: Restart kube-apiserver on control-plane to pick up new hostname
+      ansible.builtin.shell: |
+        set -euo pipefail
+        apiserver_pid="$(docker exec "{{ kind_control_plane_node }}" sh -lc \
+          'pidof kube-apiserver' || true)"
+        if [ -n "${apiserver_pid}" ]; then
+          docker exec "{{ kind_control_plane_node }}" sh -lc "kill '${apiserver_pid}'"
+        fi
+      args:
+        executable: /bin/bash
+      when: kind_keycloak_hostname_needs_injection
+      changed_when: true
+
+    - name: Verify kind context cluster-info
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --context
+          - "kind-{{ cluster_name }}"
+          - cluster-info
+      args:
+        chdir: "{{ control_plane_root }}"
+      register: kind_context_cluster_info
+      changed_when: false
+      retries: 30
+      delay: 3
+      until: kind_context_cluster_info.rc == 0
+
+  always:
+    - name: Clean up rendered kind cluster config
+      ansible.builtin.file:
+        path: /tmp/kind-cluster-{{ cluster_name }}.yaml
+        state: absent

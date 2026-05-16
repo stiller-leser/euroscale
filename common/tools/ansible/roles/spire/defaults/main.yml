@@ -1,0 +1,30 @@
+---
+spire_namespace: spire-system
+spire_trust_domain: euroscale.svc.id
+spire_server_address: spire-server.spire-system.svc.cluster.local
+spire_server_port: 8081
+spire_agent_socket_path: /run/spire/sockets/spire-agent.sock
+spire_server_image: ghcr.io/spiffe/spire-server:1.10.0
+spire_agent_image: ghcr.io/spiffe/spire-agent:1.10.0
+
+# Registration entries: map k8s ServiceAccounts to SPIFFE IDs
+# Each entry creates an SVID for the workload matching ns+sa selectors.
+spire_registration_entries:
+  - ns: backstage
+    sa: backstage
+    spiffe_id: "spiffe://{{ spire_trust_domain }}/backstage/backstage"
+  - ns: openbao
+    sa: openbao
+    spiffe_id: "spiffe://{{ spire_trust_domain }}/openbao"
+  - ns: keycloak
+    sa: keycloak-operator
+    spiffe_id: "spiffe://{{ spire_trust_domain }}/keycloak"
+  - ns: oauth2-proxy
+    sa: oauth2-proxy
+    spiffe_id: "spiffe://{{ spire_trust_domain }}/oauth2-proxy"
+  - ns: istio-system
+    sa: istio-ingressgateway
+    spiffe_id: "spiffe://{{ spire_trust_domain }}/istio-ingressgateway"
+  - ns: istio-system
+    sa: istiod
+    spiffe_id: "spiffe://{{ spire_trust_domain }}/istiod"

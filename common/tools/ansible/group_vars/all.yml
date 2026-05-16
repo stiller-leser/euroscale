@@ -1,0 +1,48 @@
+---
+cluster_name: euroscale
+local_registry_port: "5001"
+local_registry_addr: "localhost:{{ local_registry_port }}"
+backstage_image: "{{ local_registry_addr }}/backstage-oidc:local"
+
+control_plane_root: "{{ lookup('ansible.builtin.env', 'CONTROL_PLANE_ROOT') | default(playbook_dir + '/..', true) }}"
+euroscale_root: "{{ control_plane_root }}/.."
+agencies_root: "{{ euroscale_root }}/agencies"
+authz_root: "{{ agencies_root }}/authz"
+
+# Set explicitly to avoid random generation.
+keycloak_argocd_client_secret: ""
+keycloak_openbao_proxy_client_secret: ""
+keycloak_backstage_proxy_client_secret: ""
+keycloak_enforce_admin_password_reset: false
+openbao_oauth2_cookie_secret: ""
+backstage_oauth2_cookie_secret: ""
+
+terraform_cluster_and_base_dir: "{{ control_plane_root }}/terraform/cluster-and-base"
+terraform_argocd_bootstrap_dir: "{{ control_plane_root }}/terraform/argocd-bootstrap"
+terraform_argocd_apps_dir: "{{ control_plane_root }}/terraform/argocd-apps"
+
+kcp_agencies_workspace_name: agencies
+kcp_agencies_workspace_type: universal
+kcp_syncagent_apiexport_name: agencies.euro.scale
+kcp_syncagent_published_resource_name: publish-agencystackclaims
+kcp_syncagent_customer_published_resource_name: publish-customerstackclaims
+openbao_kcp_syncagent_kubeconfig_path: euroscale/kcp/syncagent-agencies-kubeconfig
+
+# Run end-of-apply live authorization/permission verification checks.
+authz_tests_enabled: true
+
+# Environment map populated dynamically in site.yml pre_tasks with computed secrets.
+# Static defaults here so --start-at-task and--extra-vars work without pre_tasks.
+euroscale_env:
+  CLUSTER_NAME: "{{ cluster_name }}"
+  LOCAL_REGISTRY_PORT: "{{ local_registry_port }}"
+  LOCAL_REGISTRY_ADDR: "{{ local_registry_addr }}"
+  BACKSTAGE_IMAGE: "{{ backstage_image }}"
+  KEYCLOAK_ARGOCD_CLIENT_SECRET: ""
+  KEYCLOAK_OPENBAO_PROXY_CLIENT_SECRET: ""
+  KEYCLOAK_BACKSTAGE_PROXY_CLIENT_SECRET: ""
+  OPENBAO_OAUTH2_COOKIE_SECRET: ""
+  BACKSTAGE_OAUTH2_COOKIE_SECRET: ""
+
+# When true, fail authz tests if OPA CLI is not available in PATH.
+authz_tests_require_opa: true

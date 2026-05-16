@@ -1,0 +1,130 @@
+---
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: openbao-oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: oauth2-proxy
+    skipCreateNamespace: true
+    chart:
+      name: oauth2-proxy
+      repository: https://oauth2-proxy.github.io/manifests
+    values:
+      fullnameOverride: openbao-oauth2-proxy
+      config:
+        clientID: openbao-proxy
+        clientSecret: openbao-proxy-local-secret
+        cookieSecret: b7V5VwjRgdVEwr8C4POPnhB7NJqO0zco
+      extraArgs:
+        provider: keycloak-oidc
+        oidc-issuer-url: https://keycloak.internal.euroscale.local/realms/euroscale
+        provider-ca-file: /etc/ssl/certs/keycloak-oidc/ca.crt
+        redirect-url: https://openbao.internal.euroscale.local/oauth2/callback
+        upstream: http://openbao-ui.openbao.svc.cluster.local:8200
+        http-address: 0.0.0.0:4180
+        email-domain: "*"
+        scope: "openid profile email roles"
+        cookie-name: _oauth2_proxy_openbao
+        cookie-domain: .internal.euroscale.local
+        cookie-secure: "true"
+        cookie-samesite: lax
+        # OpenBao hat eigenes OIDC-Auth - keine Header nötig
+        pass-authorization-header: "false"
+        pass-access-token: "false"
+        pass-user-headers: "false"
+        set-xauthrequest: "false"
+        reverse-proxy: "true"
+        skip-provider-button: "true"
+        # BEGIN AUTHZ GENERATED OPENBAO_ALLOWED_ROLE
+        allowed-role: "openbao-admin"
+        # END AUTHZ GENERATED OPENBAO_ALLOWED_ROLE
+      extraEnv:
+        - name: SSL_CERT_FILE
+          value: /etc/ssl/certs/keycloak-oidc/ca.crt
+      extraVolumes:
+        - name: keycloak-oidc-ca
+          secret:
+            secretName: keycloak-oidc-ca
+        - name: spire-agent-socket
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+      extraVolumeMounts:
+        - name: keycloak-oidc-ca
+          mountPath: /etc/ssl/certs/keycloak-oidc
+          readOnly: true
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+          readOnly: true
+---
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: backstage-oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: oauth2-proxy
+    skipCreateNamespace: true
+    chart:
+      name: oauth2-proxy
+      repository: https://oauth2-proxy.github.io/manifests
+    values:
+      fullnameOverride: backstage-oauth2-proxy
+      config:
+        clientID: backstage-proxy
+        clientSecret: backstage-proxy-local-secret
+        cookieSecret: iiNB7pyPCJguy9YT8VR21LiSTe2n2H4x
+      extraArgs:
+        provider: keycloak-oidc
+        oidc-issuer-url: https://keycloak.internal.euroscale.local/realms/euroscale
+        provider-ca-file: /etc/ssl/certs/keycloak-oidc/ca.crt
+        redirect-url: https://backstage.internal.euroscale.local/oauth2/callback
+        upstream: http://backstage.backstage.svc.cluster.local:7007
+        http-address: 0.0.0.0:4180
+        email-domain: "*"
+        scope: "openid profile email roles"
+        user-id-claim: preferred_username
+        cookie-name: _oauth2_proxy_backstage
+        cookie-domain: .internal.euroscale.local
+        cookie-secure: "true"
+        cookie-samesite: lax
+        # Backstage nutzt X-Auth-Request-User für Identity
+        pass-authorization-header: "false"
+        pass-access-token: "false"
+        pass-user-headers: "true"
+        set-xauthrequest: "true"
+        reverse-proxy: "true"
+        skip-provider-button: "true"
+        # Jeder mit einer der folgenden Rollen darf Backstage nutzen
+        # BEGIN AUTHZ GENERATED BACKSTAGE_ALLOWED_ROLE
+        allowed-role: "agencies-admin,argocd-admin,openbao-admin"
+        # END AUTHZ GENERATED BACKSTAGE_ALLOWED_ROLE
+      extraEnv:
+        - name: SSL_CERT_FILE
+          value: /etc/ssl/certs/keycloak-oidc/ca.crt
+      extraVolumes:
+        - name: keycloak-oidc-ca
+          secret:
+            secretName: keycloak-oidc-ca
+        - name: spire-agent-socket
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+      extraVolumeMounts:
+        - name: keycloak-oidc-ca
+          mountPath: /etc/ssl/certs/keycloak-oidc
+          readOnly: true
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+          readOnly: true

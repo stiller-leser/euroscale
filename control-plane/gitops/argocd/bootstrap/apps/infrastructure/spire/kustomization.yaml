@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - spire-db-external-secret.yaml
+  - spire-db-cluster.yaml
+  - server-account.yaml
+  - server-cluster-role.yaml
+  - server-configmap.yaml
+  - server-statefulset.yaml
+  - server-service.yaml
+  - agent-account.yaml
+  - agent-cluster-role.yaml
+  - agent-configmap.yaml
+  - agent-daemonset.yaml
+  - csi-driver.yaml
+  - agent-service.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd

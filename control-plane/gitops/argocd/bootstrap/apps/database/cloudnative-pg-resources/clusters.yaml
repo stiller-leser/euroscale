@@ -1,0 +1,36 @@
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-db
+  namespace: cnpg
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  superuserSecret:
+    name: cnpg-superuser
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+      secret:
+        name: keycloak-db-owner
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: kcp-db
+  namespace: cnpg
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  superuserSecret:
+    name: cnpg-superuser
+  bootstrap:
+    initdb:
+      database: kcp
+      owner: kcp
+      secret:
+        name: kcp-db-owner

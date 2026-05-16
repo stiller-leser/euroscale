@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: openbao
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: control-plane
+  source:
+    repoURL: file:///repo
+    targetRevision: HEAD
+    path: control-plane/gitops/argocd/bootstrap/apps/secrets-management/openbao
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openbao
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 20
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+    - CreateNamespace=true

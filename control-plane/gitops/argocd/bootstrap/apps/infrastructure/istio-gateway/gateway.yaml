@@ -1,0 +1,53 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: euroscale-internal-gateway
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - argocd.internal.euroscale.local
+        - openbao.internal.euroscale.local
+        - backstage.internal.euroscale.local
+        - keycloak.internal.euroscale.local
+        - kcp.internal.euroscale.local
+        - "*.agencies.euroscale.local"
+      tls:
+        httpsRedirect: true
+    - port:
+        number: 443
+        name: https-internal-apps
+        protocol: HTTPS
+      hosts:
+        - argocd.internal.euroscale.local
+        - openbao.internal.euroscale.local
+        - backstage.internal.euroscale.local
+        - "*.agencies.euroscale.local"
+      tls:
+        mode: SIMPLE
+        credentialName: euroscale-local-wildcard-tls
+    - port:
+        number: 443
+        name: https-keycloak
+        protocol: HTTPS
+      hosts:
+        - keycloak.internal.euroscale.local
+      tls:
+        mode: SIMPLE
+        credentialName: keycloak-oidc-tls
+    - port:
+        number: 443
+        name: tls-kcp-passthrough
+        protocol: TLS
+      hosts:
+        - kcp.internal.euroscale.local
+      tls:
+        mode: PASSTHROUGH

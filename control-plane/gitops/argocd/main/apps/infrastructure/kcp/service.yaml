@@ -1,0 +1,35 @@
+---
+# KCP Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kcp
+  namespace: kcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  type: ClusterIP
+  selector:
+    app: kcp
+  ports:
+  - name: api
+    port: 6443
+    targetPort: 6443
+    protocol: TCP
+---
+# KCP API Access Service (NodePort für externe Zugriffe)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kcp-external
+  namespace: kcp
+spec:
+  type: NodePort
+  selector:
+    app: kcp
+  ports:
+  - name: api
+    port: 6443
+    targetPort: 6443
+    nodePort: 30643
+    protocol: TCP

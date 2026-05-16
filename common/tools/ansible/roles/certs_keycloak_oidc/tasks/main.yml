@@ -1,0 +1,88 @@
+---
+- name: Generate Keycloak OIDC CA certificate
+  tags: [certs, keycloak_oidc]
+  when: certs_ensure_keycloak_oidc | default(true)
+  community.crypto.openssl_csr:
+    path: "{{ keycloak_oidc_ca_csr }}"
+    privatekey_path: "{{ keycloak_oidc_ca_key }}"
+    subject:
+      C: US
+      ST: Local
+      L: Local
+      O: "{{ certs_organization | default('Euroscale') }}"
+      OU: ControlPlane
+      CN: "Euroscale OIDC CA"
+    basic_constraints:
+      - CA: true
+      - pathlen: 0
+  register: ca_csr
+
+- name: Sign Keycloak OIDC CA certificate
+  tags: [certs, keycloak_oidc]
+  when: certs_ensure_keycloak_oidc | default(true)
+  community.crypto.x509_certificate:
+    path: "{{ keycloak_oidc_ca_crt }}"
+    csr_path: "{{ keycloak_oidc_ca_csr }}"
+    privatekey_path: "{{ keycloak_oidc_ca_key }}"
+    provider: selfsigned
+    selfsigned_not_after: "+3650d"
+  register: ca_crt
+
+- name: Generate Keycloak OIDC TLS key
+  tags: [certs, keycloak_oidc]
+  when: certs_ensure_keycloak_oidc | default(true)
+  community.crypto.openssl_privatekey:
+    path: "{{ keycloak_oidc_tls_key }}"
+    size: 2048
+
+- name: Generate Keycloak OIDC TLS CSR
+  tags: [certs, keycloak_oidc]
+  when: certs_ensure_keycloak_oidc | default(true)
+  community.crypto.openssl_csr:
+    path: "{{ keycloak_oidc_tls_csr }}"
+    privatekey_path: "{{ keycloak_oidc_tls_key }}"
+    subject:
+      C: US
+      ST: Local
+      L: Local
+      O: "{{ certs_organization | default('Euroscale') }}"
+      OU: ControlPlane
+      CN: "{{ keycloak_host }}"
+
+- name: Sign Keycloak OIDC TLS certificate
+  tags: [certs, keycloak_oidc]
+  when: certs_ensure_keycloak_oidc | default(true)
+  community.crypto.x509_certificate:
+    path: "{{ keycloak_oidc_tls_crt }}"
+    csr_path: "{{ keycloak_oidc_tls_csr }}"
+    privatekey_path: "{{ keycloak_oidc_ca_key }}"
+    issuer_publickey_path: "{{ keycloak_oidc_ca_crt }}"
+    provider: ownca
+    ownca_not_after: "+825d"
+    extended_key_usage:
+      - serverAuth
+    subject_alt_name:
+      - "DNS:localhost"
+      - "DNS:{{ keycloak_host }}"
+      - "DNS:keycloak-https-proxy"
+      - "DNS:keycloak-https-proxy.keycloak"
+      - "DNS:keycloak-https-proxy.keycloak.svc"
+      - "DNS:keycloak-https-proxy.keycloak.svc.cluster.local"
+      - "IP:127.0.0.1"
+  register: tls_crt
+
+- name: Create Keycloak TLS Kubernetes secret
+  tags: [certs, keycloak_oidc, k8s]
+  when: certs_ensure_keycloak_oidc | default(true)
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: keycloak-oidc-tls
+        namespace: "{{ keycloak_namespace }}"
+      data:
+        tls.crt: "{{ lookup('file', keycloak_oidc_tls_crt) | b64encode }}"
+        tls.key: "{{ lookup('file', keycloak_oidc_tls_key) | b64encode }}"
+  when: certs_apply_to_k8s | default(true)

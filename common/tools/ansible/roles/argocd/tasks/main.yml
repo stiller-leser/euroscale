@@ -1,0 +1,387 @@
+---
+- name: Resolve OpenBao root token source
+  when: argocd_action == "set_backstage_token"
+  block:
+    - name: Read OpenBao init log
+      ansible.builtin.slurp:
+        src: "{{ control_plane_root }}/scripts/openbao-init.log"
+      register: openbao_init_log_raw
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Set OpenBao root token
+      ansible.builtin.set_fact:
+        openbao_root_token: >-
+          {{
+            (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim)
+            if (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim | length > 0)
+            else (
+              (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim)
+              if (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim | length > 0)
+              else (
+                ((openbao_init_log_raw.content | b64decode | from_json).root_token | default('') | trim)
+                if (openbao_init_log_raw is defined and (openbao_init_log_raw.content | default('') | length > 0))
+                else ''
+              )
+            )
+          }}
+      no_log: true
+
+    - name: Ensure OpenBao root token is available
+      ansible.builtin.assert:
+        that:
+          - openbao_root_token | length > 0
+        fail_msg: "OpenBao root token missing (OPENBAO_ROOT_TOKEN/VAULT_TOKEN or scripts/openbao-init.log required)."
+
+- name: Get OpenBao pod
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: openbao
+    label_selectors:
+      - app.kubernetes.io/name=openbao
+  register: openbao_pods
+  when: argocd_action == "set_backstage_token"
+
+- name: Ensure OpenBao pod exists
+  ansible.builtin.assert:
+    that:
+      - (openbao_pods.resources | length) > 0
+  when: argocd_action == "set_backstage_token"
+
+- name: Get ArgoCD server pod
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: argocd
+    label_selectors:
+      - app.kubernetes.io/name=argocd-server
+  register: argocd_server_pods
+  when: argocd_action == "set_backstage_token"
+
+- name: Ensure ArgoCD server pod exists
+  ansible.builtin.assert:
+    that:
+      - (argocd_server_pods.resources | length) > 0
+  when: argocd_action == "set_backstage_token"
+
+- name: Resolve ArgoCD server container name
+  ansible.builtin.set_fact:
+    argocd_server_container_name: >-
+      {{
+        'argocd-server'
+        if (
+          'argocd-server'
+          in (
+            argocd_server_pods.resources[0].spec.containers
+            | map(attribute='name')
+            | list
+          )
+        )
+        else (
+          'server'
+          if (
+            'server'
+            in (
+              argocd_server_pods.resources[0].spec.containers
+              | map(attribute='name')
+              | list
+            )
+          )
+          else argocd_server_pods.resources[0].spec.containers[0].name
+        )
+      }}
+  when: argocd_action == "set_backstage_token"
+
+- name: Get ArgoCD initial admin secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: argocd
+    name: argocd-initial-admin-secret
+  register: argocd_admin_secret
+  failed_when: false
+  retries: 60
+  delay: 5
+  until: (argocd_admin_secret.resources | length) > 0
+  when: argocd_action == "set_backstage_token"
+
+- name: Read existing backstage secret fields from OpenBao
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n openbao exec "{{ openbao_pods.resources[0].metadata.name }}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+      bao kv get -format=json euroscale/backstage 2>/dev/null || true
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  register: backstage_existing
+  changed_when: false
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Set fallback backstage fields
+  ansible.builtin.set_fact:
+    backstage_existing_data: >-
+      {{
+        ((backstage_existing.stdout | from_json).data.data | default({}, true))
+        if (backstage_existing.stdout | trim | length > 0)
+        else {}
+      }}
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Derive fallback backstage fields
+  ansible.builtin.set_fact:
+    backstage_keycloak_client_secret: "{{ backstage_existing_data.get('keycloak_client_secret') | default('backstage-local-secret', true) }}"
+    backstage_argocd_existing_token: "{{ backstage_existing_data.get('argocd_api_token', '') }}"
+    backstage_argocd_existing_auth_header: "{{ backstage_existing_data.get('argocd_auth_header', '') }}"
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Generate ArgoCD API token
+  ansible.builtin.set_fact:
+    argocd_admin_password: "{{ (argocd_admin_secret.resources[0].data.password | b64decode) if (argocd_admin_secret.resources | length > 0 and (argocd_admin_secret.resources[0].data.password | default('') | length > 0)) else '' }}"
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Generate ArgoCD API token via single-session CLI call
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n argocd exec "{{ argocd_server_pods.resources[0].metadata.name }}" -c "{{ argocd_server_container_name }}" -- \
+      env ARGOCD_ADMIN_PASSWORD="{{ argocd_admin_password }}" \
+      sh -lc 'argocd login localhost:8080 --plaintext --username admin --password "${ARGOCD_ADMIN_PASSWORD}" >/dev/null 2>&1 && argocd account generate-token --account backstage'
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  register: argocd_generated_token_cmd
+  changed_when: false
+  failed_when: false
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_admin_password | length > 0
+  no_log: true
+
+- name: Normalize generated ArgoCD token output
+  ansible.builtin.set_fact:
+    argocd_generated_token: "{{ (argocd_generated_token_cmd.stdout | default('') | trim) if (argocd_generated_token_cmd.rc | default(1) == 0) else '' }}"
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Note fallback to existing ArgoCD token when generation fails
+  ansible.builtin.debug:
+    msg: "ArgoCD backstage token generation failed; reusing existing argocd_api_token from OpenBao if present."
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_generated_token | default('') | trim | length == 0
+    - backstage_argocd_existing_token | trim | length > 0
+
+- name: Select final ArgoCD token candidate
+  ansible.builtin.set_fact:
+    argocd_final_token: >-
+      {{
+        (argocd_generated_token | trim)
+        if (argocd_generated_token | trim | length > 0)
+        else (backstage_argocd_existing_token | trim)
+      }}
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Build final ArgoCD authorization header value
+  ansible.builtin.set_fact:
+    argocd_final_auth_header: >-
+      {{
+        ('Bearer ' ~ (argocd_final_token | trim))
+        if (argocd_final_token | default('') | trim | length > 0)
+        else (backstage_argocd_existing_auth_header | trim)
+      }}
+  when: argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Ensure an ArgoCD token candidate exists for Backstage
+  ansible.builtin.assert:
+    that:
+      - argocd_final_token | default('') | trim | length > 0
+      - argocd_final_auth_header | default('') | trim | length > 0
+    fail_msg: >-
+      Could not generate a Backstage ArgoCD API token and no existing token is stored in OpenBao
+      at euroscale/backstage.argocd_api_token.
+  when:
+    - argocd_action == "set_backstage_token"
+  no_log: true
+
+- name: Validate ArgoCD token candidate against ArgoCD API
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n argocd exec "{{ argocd_server_pods.resources[0].metadata.name }}" -c "{{ argocd_server_container_name }}" -- \
+      env ARGOCD_TOKEN="{{ argocd_final_token }}" \
+      sh -lc 'argocd account get-user-info --server localhost:8080 --plaintext --auth-token "${ARGOCD_TOKEN}" >/dev/null 2>&1'
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  changed_when: false
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_final_token | default('') | trim | length > 0
+  no_log: true
+
+- name: Write backstage token payload into OpenBao
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n openbao exec "{{ openbao_pods.resources[0].metadata.name }}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+      bao kv put euroscale/backstage \
+        "keycloak_client_secret={{ backstage_keycloak_client_secret }}" \
+        "argocd_api_token={{ argocd_final_token }}" \
+        "argocd_auth_header={{ argocd_final_auth_header }}" >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_final_token | default('') | trim | length > 0
+  no_log: true
+
+- name: Build force-sync value for backstage ExternalSecret
+  ansible.builtin.set_fact:
+    backstage_force_sync_value: "{{ lookup('ansible.builtin.pipe', 'date +%s') | trim }}"
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_final_token | default('') | trim | length > 0
+
+- name: Force refresh backstage ExternalSecret after token update
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - backstage
+      - annotate
+      - externalsecret
+      - backstage-secrets
+      - "force-sync={{ backstage_force_sync_value }}"
+      - --overwrite
+  args:
+    chdir: "{{ control_plane_root }}"
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_final_token | default('') | trim | length > 0
+  changed_when: false
+
+- name: Wait for backstage-secrets ArgoCD token headers to become non-empty
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: backstage
+    name: backstage-secrets
+  register: backstage_secret_after_token_refresh
+  retries: 60
+  delay: 5
+  until: >-
+    (
+      backstage_secret_after_token_refresh.resources | length
+    ) > 0 and (
+      (
+        (
+          backstage_secret_after_token_refresh.resources[0].data.ARGOCD_API_TOKEN
+          | default('')
+        )
+        | b64decode
+        | trim
+        | length
+      ) > 0
+    ) and (
+      (
+        (
+          backstage_secret_after_token_refresh.resources[0].data.ARGOCD_AUTH_HEADER
+          | default('')
+        )
+        | b64decode
+        | trim
+        | length
+      ) > 0
+    )
+  when:
+    - argocd_action == "set_backstage_token"
+
+- name: Build force-sync value for argocd OIDC ExternalSecret
+  ansible.builtin.set_fact:
+    argocd_oidc_force_sync_value: "{{ lookup('ansible.builtin.pipe', 'date +%s') | trim }}"
+  when:
+    - argocd_action == "set_backstage_token"
+
+- name: Force refresh argocd OIDC ExternalSecret after token generation
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - annotate
+      - externalsecret
+      - argocd-oidc-secret
+      - "force-sync={{ argocd_oidc_force_sync_value }}"
+      - --overwrite
+  args:
+    chdir: "{{ control_plane_root }}"
+  when:
+    - argocd_action == "set_backstage_token"
+  changed_when: false
+
+- name: Wait for argocd-secret oidcKeycloakClientSecret to become non-empty
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: argocd
+    name: argocd-secret
+  register: argocd_secret_after_oidc_refresh
+  retries: 60
+  delay: 5
+  until: >-
+    (
+      argocd_secret_after_oidc_refresh.resources | length
+    ) > 0 and (
+      (
+        (
+          argocd_secret_after_oidc_refresh.resources[0].data.oidcKeycloakClientSecret
+          | default('')
+        )
+        | b64decode
+        | trim
+        | length
+      ) > 0
+    )
+  when:
+    - argocd_action == "set_backstage_token"
+
+- name: Restart ArgoCD server after OIDC secret refresh
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - rollout
+      - restart
+      - deployment/argocd-server
+  args:
+    chdir: "{{ control_plane_root }}"
+  when:
+    - argocd_action == "set_backstage_token"
+  changed_when: true
+
+- name: Wait for ArgoCD server rollout after OIDC secret refresh
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - rollout
+      - status
+      - deployment/argocd-server
+      - --timeout=300s
+  args:
+    chdir: "{{ control_plane_root }}"
+  when:
+    - argocd_action == "set_backstage_token"
+    - argocd_final_token | default('') | trim | length > 0
+  changed_when: false
+  no_log: true

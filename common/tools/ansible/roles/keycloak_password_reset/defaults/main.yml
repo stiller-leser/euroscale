@@ -1,0 +1,4 @@
+---
+keycloak_namespace: keycloak
+keycloak_pod_name: keycloak-0
+keycloak_admin_secret_name: keycloak-admin-credentials

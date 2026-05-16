@@ -1,0 +1,381 @@
+---
+- name: Explain OpenBao post-argo bootstrap wait points
+  ansible.builtin.debug:
+    msg: >-
+      Post-argo bootstrap waits for External Secrets SA, configures auth/kubernetes,
+      waits for Keycloak OIDC discovery, then configures auth/oidc roles.
+      This can take several minutes and may look idle while dependencies reconcile.
+
+- name: Wait for external-secrets namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ lookup('ansible.builtin.env', 'ESO_NAMESPACE') | default('external-secrets', true) }}"
+  register: eso_namespace
+  retries: 120
+  delay: 5
+  until: (eso_namespace.resources | length) > 0
+
+- name: Wait for external-secrets service account
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ServiceAccount
+    namespace: "{{ lookup('ansible.builtin.env', 'ESO_NAMESPACE') | default('external-secrets', true) }}"
+    name: external-secrets
+  register: eso_service_account
+  retries: 120
+  delay: 5
+  until: (eso_service_account.resources | length) > 0
+
+- name: Configure OpenBao kubernetes auth for External Secrets
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+
+    bao() {
+      kubectl -n openbao exec "${pod}" -- \
+        env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+        bao "$@"
+    }
+
+    if ! bao auth list -format=json | grep -q '"kubernetes/"'; then
+      bao auth enable kubernetes >/dev/null
+    fi
+
+    k8s_ca="$(kubectl -n openbao exec "${pod}" -- cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)"
+
+    bao write auth/kubernetes/config \
+      kubernetes_host="https://kubernetes.default.svc:443" \
+      kubernetes_ca_cert="${k8s_ca}" >/dev/null
+
+    bao write auth/kubernetes/role/external-secrets \
+      bound_service_account_names=external-secrets \
+      bound_service_account_namespaces="{{ lookup('ansible.builtin.env', 'ESO_NAMESPACE') | default('external-secrets', true) }}" \
+      policies=external-secrets \
+      ttl=1h >/dev/null
+
+    bao write auth/kubernetes/role/backstage \
+      bound_service_account_names=backstage \
+      bound_service_account_namespaces=backstage \
+      policies=backstage-openbao \
+      ttl=15m >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true
+
+- name: Set Keycloak OIDC/OpenBao defaults
+  ansible.builtin.set_fact:
+    keycloak_issuer_url: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ISSUER_URL') | default('https://keycloak.internal.euroscale.local/realms/euroscale', true) }}"
+    keycloak_openbao_discovery_url: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OPENBAO_DISCOVERY_URL') | default(lookup('ansible.builtin.env', 'KEYCLOAK_ISSUER_URL') | default('https://keycloak.internal.euroscale.local/realms/euroscale', true), true) }}"
+    keycloak_openbao_probe_primary: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OPENBAO_DISCOVERY_PROBE_URL') | default('https://keycloak.internal.euroscale.local/realms/euroscale', true) }}"
+    keycloak_oidc_wait_timeout: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OIDC_DISCOVERY_WAIT_TIMEOUT') | default('1200', true) | int }}"
+    keycloak_oidc_wait_interval: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OIDC_DISCOVERY_WAIT_INTERVAL') | default('5', true) | int }}"
+    openbao_oidc_client_id: "{{ lookup('ansible.builtin.env', 'OPENBAO_OIDC_CLIENT_ID') | default('openbao', true) }}"
+    openbao_oidc_redirect_uri: "{{ lookup('ansible.builtin.env', 'OPENBAO_OIDC_REDIRECT_URI') | default('https://openbao.internal.euroscale.local/ui/vault/auth/oidc/oidc/callback', true) }}"
+    openbao_oidc_redirect_uri_local: "{{ lookup('ansible.builtin.env', 'OPENBAO_OIDC_REDIRECT_URI_LOCALHOST') | default('http://localhost:8200/ui/vault/auth/oidc/oidc/callback', true) }}"
+    keycloak_openbao_client_secret: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OPENBAO_CLIENT_SECRET') | default('openbao-local-secret', true) }}"
+
+- name: Wait for keycloak-0 pod to exist
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: keycloak-0
+  register: keycloak_pod_info
+  retries: 180
+  delay: 5
+  until: (keycloak_pod_info.resources | length) > 0
+
+- name: Wait for keycloak-0 pod to be Ready
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: keycloak-0
+  register: keycloak_pod_ready_info
+  retries: 180
+  delay: 5
+  until: >-
+    (
+      keycloak_pod_ready_info.resources | length
+    ) > 0 and (
+      (
+        keycloak_pod_ready_info.resources[0].status.conditions
+        | default([])
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list
+        | length
+      ) > 0
+    )
+
+- name: Probe Keycloak OIDC discovery URL once
+  ansible.builtin.uri:
+    url: "{{ keycloak_openbao_probe_primary }}/.well-known/openid-configuration"
+    method: GET
+    validate_certs: false
+    return_content: true
+    timeout: 5
+    status_code: [200, 404, 502, 503]
+  register: oidc_probe_initial
+  failed_when: false
+
+- name: Read Keycloak realm import status
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2alpha1
+    kind: KeycloakRealmImport
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: euroscale-realm
+  register: keycloak_realm_import_info
+
+- name: Determine if Keycloak realm import is marked Done
+  ansible.builtin.set_fact:
+    keycloak_realm_import_done: >-
+      {{
+        (keycloak_realm_import_info.resources | default([]) | length > 0) and
+        (
+          (
+            keycloak_realm_import_info.resources[0].status.conditions
+            | default([])
+            | selectattr('type', 'equalto', 'Done')
+            | selectattr('status', 'equalto', 'True')
+            | list
+            | length
+          ) > 0
+        )
+      }}
+
+- name: Determine if Keycloak realm import has errors
+  ansible.builtin.set_fact:
+    keycloak_realm_import_has_errors: >-
+      {{
+        (keycloak_realm_import_info.resources | default([]) | length > 0) and
+        not keycloak_realm_import_done and
+        (
+          (
+            keycloak_realm_import_info.resources[0].status.conditions
+            | default([])
+            | selectattr('type', 'equalto', 'HasErrors')
+            | selectattr('status', 'equalto', 'True')
+            | list
+            | length
+          ) > 0
+        )
+      }}
+
+- name: Determine if Keycloak realm import needs recreation
+  ansible.builtin.set_fact:
+    keycloak_realm_import_needs_recreation: >-
+      {{
+        (oidc_probe_initial.status | default(0)) == 404 and
+        (
+          keycloak_realm_import_done or
+          keycloak_realm_import_has_errors
+        )
+      }}
+
+- name: Recreate stale/failed Keycloak realm import when OIDC URL is 404
+  kubernetes.core.k8s:
+    state: absent
+    api_version: k8s.keycloak.org/v2alpha1
+    kind: KeycloakRealmImport
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: euroscale-realm
+  when: keycloak_realm_import_needs_recreation
+
+- name: Wait for recreated Keycloak realm import to complete
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2alpha1
+    kind: KeycloakRealmImport
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: euroscale-realm
+  register: keycloak_realm_import_ready
+  retries: 180
+  delay: 5
+  until: >-
+    (
+      keycloak_realm_import_ready.resources | length
+    ) > 0 and (
+      (
+        keycloak_realm_import_ready.resources[0].status.conditions
+        | default([])
+        | selectattr('type', 'equalto', 'Done')
+        | selectattr('status', 'equalto', 'True')
+        | list
+        | length
+      ) > 0
+    )
+  when: keycloak_realm_import_needs_recreation
+
+- name: Wait for Keycloak OIDC discovery on primary URL
+  ansible.builtin.uri:
+    url: "{{ keycloak_openbao_probe_primary }}/.well-known/openid-configuration"
+    method: GET
+    validate_certs: false
+    return_content: true
+    timeout: 5
+    status_code: [200, 404, 502, 503]
+  register: oidc_probe_primary
+  retries: "{{ [1, (keycloak_oidc_wait_timeout // keycloak_oidc_wait_interval) | int] | max }}"
+  delay: "{{ keycloak_oidc_wait_interval }}"
+  until:
+    - oidc_probe_primary.status | default(0) == 200
+    - (oidc_probe_primary.content | default('') | regex_search('\"issuer\"')) is not none
+
+- name: Ensure OIDC discovery is ready on primary DNS URL
+  ansible.builtin.assert:
+    that:
+      - >-
+        oidc_probe_primary.status | default(0) == 200 and
+        ((oidc_probe_primary.content | default('') | regex_search('\"issuer\"')) is not none)
+    fail_msg: >-
+      Timed out waiting for Keycloak OIDC discovery via {{ keycloak_openbao_probe_primary }}.
+      Check DNS/routing for keycloak.internal.euroscale.local and Keycloak realm import state.
+
+- name: Check if Keycloak OIDC CA file exists
+  ansible.builtin.stat:
+    path: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OIDC_CA_FILE') | default(control_plane_root ~ '/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt', true) }}"
+  register: keycloak_oidc_ca_stat
+
+- name: Read Keycloak OIDC CA file
+  ansible.builtin.slurp:
+    src: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OIDC_CA_FILE') | default(control_plane_root ~ '/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt', true) }}"
+  register: keycloak_oidc_ca_raw
+  when: keycloak_oidc_ca_stat.stat.exists
+  no_log: true
+
+- name: Build OpenBao OIDC config payload
+  ansible.builtin.set_fact:
+    openbao_oidc_config_payload: >-
+      {{
+        {
+          'oidc_discovery_url': keycloak_openbao_discovery_url,
+          'bound_issuer': keycloak_issuer_url,
+          'oidc_client_id': openbao_oidc_client_id,
+          'oidc_client_secret': keycloak_openbao_client_secret,
+          'default_role': 'oidc'
+        }
+        | combine(
+            {'oidc_discovery_ca_pem': (keycloak_oidc_ca_raw.content | b64decode)}
+            if (keycloak_oidc_ca_stat.stat.exists | default(false))
+            else {}
+          )
+      }}
+  no_log: true
+
+- name: Set OpenBao OIDC role bindings from centralized authz config
+  ansible.builtin.set_fact:
+    openbao_oidc_role_bindings_effective: >-
+      {{
+        openbao_oidc_role_bindings
+        | default(
+            [
+              {
+                'name': 'oidc',
+                'token_policies': 'default,openbao-admin',
+                'bound_roles': ['openbao-admin']
+              },
+              {
+                'name': 'openbao-admin',
+                'token_policies': 'default,openbao-admin',
+                'bound_roles': ['openbao-admin']
+              }
+            ],
+            true
+          )
+      }}
+  no_log: true
+
+- name: Encode OpenBao OIDC config payload for shell-safe transport
+  ansible.builtin.set_fact:
+    openbao_oidc_config_payload_b64: "{{ openbao_oidc_config_payload | to_json | b64encode }}"
+  no_log: true
+
+- name: Configure OpenBao OIDC auth
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" \
+      VAULT_TOKEN="{{ openbao_root_token }}" \
+      OPENBAO_OIDC_CONFIG_B64="{{ openbao_oidc_config_payload_b64 }}" \
+      sh -lc '
+      set -euo pipefail
+      config_tmp="$(mktemp)"
+      trap "rm -f \"${config_tmp}\"" EXIT
+
+      if ! bao auth list -format=json | grep -q "\"oidc/\""; then
+        bao auth enable -path=oidc jwt >/dev/null
+      fi
+
+      printf "%s" "${OPENBAO_OIDC_CONFIG_B64}" | base64 -d > "${config_tmp}"
+      bao write auth/oidc/config @"${config_tmp}" >/dev/null
+      '
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true
+
+- name: Configure OpenBao OIDC roles from centralized authz bindings
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" \
+      VAULT_TOKEN="{{ openbao_root_token }}" \
+      OPENBAO_OIDC_ROLE_NAME="{{ item.name }}" \
+      OPENBAO_OIDC_ROLE_B64="{{ openbao_oidc_role_payload | to_json | b64encode }}" \
+      sh -lc '
+      set -euo pipefail
+      role_tmp="$(mktemp)"
+      trap "rm -f \"${role_tmp}\"" EXIT
+      printf "%s" "${OPENBAO_OIDC_ROLE_B64}" | base64 -d > "${role_tmp}"
+      bao write "auth/oidc/role/${OPENBAO_OIDC_ROLE_NAME}" @"${role_tmp}" >/dev/null
+      '
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  loop: "{{ openbao_oidc_role_bindings_effective }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    openbao_oidc_role_payload:
+      role_type: oidc
+      user_claim: preferred_username
+      bound_audiences: "{{ openbao_oidc_client_id }}"
+      allowed_redirect_uris:
+        - "{{ openbao_oidc_redirect_uri }}"
+        - "{{ openbao_oidc_redirect_uri_local }}"
+      oidc_scopes: "openid,profile,email,roles"
+      token_policies: "{{ item.token_policies }}"
+      bound_claims:
+        roles: "{{ item.bound_roles }}"
+  no_log: true
+
+- name: Configure OpenBao mount listing visibility
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" \
+      VAULT_TOKEN="{{ openbao_root_token }}" \
+      sh -lc '
+      set -euo pipefail
+      for mount in $(bao auth list -format=json | sed -n "s/^[[:space:]]*\"\\([^\"]*\\/\\)\".*/\\1/p"); do
+        if [ "${mount}" = "oidc/" ]; then
+          bao auth tune -listing-visibility=unauth "${mount}" >/dev/null || true
+        else
+          bao auth tune -listing-visibility=hidden "${mount}" >/dev/null || true
+        fi
+      done
+      bao secrets tune -listing-visibility=hidden cubbyhole/ >/dev/null || true
+      '
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true

@@ -1,0 +1,64 @@
+{{- $realmPrefix := default "agency" .Values.keycloak.realmPrefix -}}
+{{- $realmName := printf "%s-%s" $realmPrefix .Values.agencyName -}}
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: backstage-{{ required "agencyName is required" .Values.agencyName }}-oauth2-proxy
+  namespace: oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: oauth2-proxy
+    skipCreateNamespace: true
+    chart:
+      name: oauth2-proxy
+      repository: https://oauth2-proxy.github.io/manifests
+    values:
+      fullnameOverride: backstage-{{ .Values.agencyName }}-oauth2-proxy
+      config:
+        clientID: {{ .Values.oauth2Proxy.clientId | quote }}
+        clientSecret: {{ .Values.oauth2Proxy.clientSecret | quote }}
+        cookieSecret: {{ .Values.oauth2Proxy.cookieSecret | quote }}
+      extraArgs:
+        provider: keycloak-oidc
+        oidc-issuer-url: {{ printf "https://%s/realms/%s" .Values.keycloak.host $realmName | quote }}
+        provider-ca-file: /etc/ssl/certs/keycloak-oidc/ca.crt
+        redirect-url: {{ printf "https://%s.agencies.euroscale.local/oauth2/callback" .Values.agencyName | quote }}
+        upstream: {{ printf "http://backstage-%s.backstage.svc.cluster.local:7007" .Values.agencyName | quote }}
+        authenticated-emails-file: /etc/oauth2-proxy/allowed/authorized-emails
+        http-address: 0.0.0.0:4180
+        email-domain: "*"
+        scope: "openid profile email roles"
+        user-id-claim: preferred_username
+        cookie-name: {{ printf "_oauth2_proxy_backstage_%s" .Values.agencyName | quote }}
+        cookie-domain: .agencies.euroscale.local
+        cookie-secure: "true"
+        cookie-samesite: lax
+        pass-authorization-header: "false"
+        pass-access-token: "false"
+        pass-user-headers: "true"
+        set-xauthrequest: "true"
+        reverse-proxy: "true"
+        skip-provider-button: "true"
+        allowed-role: {{ .Values.oauth2Proxy.allowedRole | quote }}
+      extraEnv:
+        - name: SSL_CERT_FILE
+          value: /etc/ssl/certs/keycloak-oidc/ca.crt
+      extraVolumes:
+        - name: keycloak-oidc-ca
+          secret:
+            secretName: keycloak-oidc-ca
+        - name: allowed-emails
+          configMap:
+            name: backstage-{{ .Values.agencyName }}-allowed-emails
+      extraVolumeMounts:
+        - name: keycloak-oidc-ca
+          mountPath: /etc/ssl/certs/keycloak-oidc
+          readOnly: true
+        - name: allowed-emails
+          mountPath: /etc/oauth2-proxy/allowed
+          readOnly: true

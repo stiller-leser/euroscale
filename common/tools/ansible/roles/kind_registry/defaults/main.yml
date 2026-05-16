@@ -1,0 +1,13 @@
+---
+local_registry_enable: true
+local_registry_name: "kind-registry"
+local_registry_port: "5001"
+local_registry_network: "kind"
+local_registry_configure_on_kind: true
+local_registry_configmap: false
+
+# Set to false if cluster doesn't exist yet
+kind_cluster_exists: true
+
+# Set externally by make (cluster_name from Makefile)
+cluster_name: "euroscale"

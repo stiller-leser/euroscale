@@ -1,0 +1,7 @@
+---
+openbao_namespace: openbao
+spire_namespace: spire-system
+spire_trust_domain: euroscale.svc.id
+spire_server_address: spire-server.spire-system.svc.cluster.local
+spire_server_port: 8081
+euroscale_env: {}

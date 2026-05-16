@@ -1,0 +1,69 @@
+{{- $realmPrefix := default "agency" .Values.keycloak.realmPrefix -}}
+{{- $realmName := printf "%s-%s" $realmPrefix .Values.agencyName -}}
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: {{ printf "%s-realm" $realmName | quote }}
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/part-of: agencies
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+spec:
+  keycloakCRName: keycloak
+  realm:
+    id: {{ $realmName | quote }}
+    realm: {{ $realmName | quote }}
+    displayName: {{ printf "Agency %s" .Values.agencyName | quote }}
+    enabled: true
+    roles:
+      realm:
+        - name: agencies-admin
+          description: Agency-scoped Backstage administrators
+    groups:
+      - name: agencies-admin
+    clients:
+      - clientId: {{ .Values.oauth2Proxy.clientId | quote }}
+        name: {{ printf "Backstage OAuth2 Proxy (%s)" .Values.agencyName | quote }}
+        protocol: openid-connect
+        publicClient: false
+        secret: {{ .Values.oauth2Proxy.clientSecret | quote }}
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        rootUrl: {{ printf "https://%s.agencies.euroscale.local" .Values.agencyName | quote }}
+        redirectUris:
+          - {{ printf "https://%s.agencies.euroscale.local/oauth2/callback" .Values.agencyName | quote }}
+          - {{ printf "https://*.%s.euroscale.local/oauth2/callback" .Values.agencyName | quote }}
+        webOrigins:
+          - {{ printf "https://%s.agencies.euroscale.local" .Values.agencyName | quote }}
+          - {{ printf "https://*.%s.euroscale.local" .Values.agencyName | quote }}
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+    users:
+{{- range $member := (default (list) .Values.access.members) }}
+      - username: {{ $member | quote }}
+        enabled: true
+        emailVerified: true
+        email: {{ $member | quote }}
+        requiredActions:
+          - "UPDATE_PASSWORD"
+        realmRoles:
+          - "agencies-admin"
+        groups:
+          - "agencies-admin"
+        credentials:
+          - type: "password"
+            value: {{ $.Values.keycloak.defaultUserPassword | quote }}
+            temporary: true
+{{- end }}

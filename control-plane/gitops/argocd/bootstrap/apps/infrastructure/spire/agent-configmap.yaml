@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent
+  namespace: spire-system
+data:
+  agent.conf: |
+    agent {
+      trust_domain = "euroscale.svc.id"
+      log_level = "INFO"
+      server_address = "spire-server.spire-system.svc.cluster.local"
+      server_port = 8081
+      socket_path = "/run/spire/sockets/spire-agent.sock"
+      insecure_bootstrap = true
+    }
+
+    plugins {
+      KeyManager "memory" {
+        plugin_data {}
+      }
+
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          skip_k8s_verification = true
+        }
+      }
+
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          cluster = "euroscale-cluster"
+        }
+      }
+    }

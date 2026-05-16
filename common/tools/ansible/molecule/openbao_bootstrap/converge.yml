@@ -1,0 +1,8 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  tasks:
+    - name: Import openbao_bootstrap role
+      import_role:
+        name: openbao_bootstrap

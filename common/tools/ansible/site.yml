@@ -1,0 +1,316 @@
+---
+- name: Euroscale local stack apply via roles
+  hosts: local
+  gather_facts: false
+  vars:
+    cluster_type: "{{ lookup('ansible.builtin.env', 'CLUSTER_TYPE') | default('kind', true) }}"
+    ansible_venv_dir: "/home/kajmo/workspace/euroscale/.venv"
+    ansible_venv_python: "/home/kajmo/workspace/euroscale/.venv/bin/python"
+  pre_tasks:
+    - name: Use virtualenv Python interpreter for this play
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ ansible_venv_python }}"
+
+    - name: Reset connection to apply virtualenv interpreter
+      ansible.builtin.meta: reset_connection
+
+    - name: Check OPA CLI availability for strict authz tests
+      ansible.builtin.command:
+        argv:
+          - opa
+          - version
+      register: opa_cli_check
+      changed_when: false
+      failed_when: false
+      when:
+        - authz_tests_enabled | default(true) | bool
+        - authz_tests_require_opa | default(true) | bool
+
+    - name: Ensure OPA CLI exists when strict authz tests are enabled
+      ansible.builtin.assert:
+        that:
+          - opa_cli_check.rc | default(1) == 0
+        fail_msg: >-
+          OPA CLI is required for authz tests but was not found in PATH.
+          Run ./scripts/setup.sh (installs OPA) and re-run make apply.
+      when:
+        - authz_tests_enabled | default(true) | bool
+        - authz_tests_require_opa | default(true) | bool
+
+    - name: Generate centralized authz artifacts
+      ansible.builtin.command:
+        argv:
+          - node
+          - /home/kajmo/workspace/euroscale/common/scripts/generate-authz-config.mjs
+      args:
+        chdir: "{{ control_plane_root }}"
+
+    - name: Load generated centralized authz vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/group_vars/authz.generated.yml"
+
+    - name: Ensure local generated secret directory exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/.secrets"
+        state: directory
+        mode: "0700"
+
+    - name: Prepare runtime secrets and environment
+      ansible.builtin.set_fact:
+        effective_keycloak_argocd_client_secret: >-
+          {{
+            (keycloak_argocd_client_secret | default('') | trim)
+            if (keycloak_argocd_client_secret | default('') | trim | length > 0)
+            else 'argocd-local-secret'
+          }}
+        effective_keycloak_openbao_proxy_client_secret: >-
+          {{
+            (keycloak_openbao_proxy_client_secret | default('') | trim)
+            if (keycloak_openbao_proxy_client_secret | default('') | trim | length > 0)
+            else 'openbao-proxy-local-secret'
+          }}
+        effective_keycloak_backstage_proxy_client_secret: >-
+          {{
+            (keycloak_backstage_proxy_client_secret | default('') | trim)
+            if (keycloak_backstage_proxy_client_secret | default('') | trim | length > 0)
+            else 'backstage-proxy-local-secret'
+          }}
+        effective_openbao_oauth2_cookie_secret: >-
+          {{
+            (openbao_oauth2_cookie_secret | default('') | trim)
+            if (openbao_oauth2_cookie_secret | default('') | trim | length > 0)
+            else lookup('ansible.builtin.password', playbook_dir ~ '/.secrets/openbao_oauth2_cookie_secret length=32 chars=ascii_letters,digits')
+          }}
+        effective_backstage_oauth2_cookie_secret: >-
+          {{
+            (backstage_oauth2_cookie_secret | default('') | trim)
+            if (backstage_oauth2_cookie_secret | default('') | trim | length > 0)
+            else lookup('ansible.builtin.password', playbook_dir ~ '/.secrets/backstage_oauth2_cookie_secret length=32 chars=ascii_letters,digits')
+          }}
+      no_log: true
+
+    - name: Build process environment map
+      ansible.builtin.set_fact:
+        euroscale_env:
+          CLUSTER_NAME: "{{ cluster_name }}"
+          LOCAL_REGISTRY_PORT: "{{ local_registry_port }}"
+          LOCAL_REGISTRY_ADDR: "{{ local_registry_addr }}"
+          BACKSTAGE_IMAGE: "{{ backstage_image }}"
+          KEYCLOAK_ARGOCD_CLIENT_SECRET: "{{ effective_keycloak_argocd_client_secret }}"
+          KEYCLOAK_OPENBAO_PROXY_CLIENT_SECRET: "{{ effective_keycloak_openbao_proxy_client_secret }}"
+          KEYCLOAK_BACKSTAGE_PROXY_CLIENT_SECRET: "{{ effective_keycloak_backstage_proxy_client_secret }}"
+          OPENBAO_OAUTH2_COOKIE_SECRET: "{{ effective_openbao_oauth2_cookie_secret }}"
+          BACKSTAGE_OAUTH2_COOKIE_SECRET: "{{ effective_backstage_oauth2_cookie_secret }}"
+      no_log: true
+
+  tasks:
+    - name: Step 1 sync service DNS config
+      ansible.builtin.include_role:
+        name: preflight_dns
+
+    - name: Step 2 ensure Keycloak OIDC root CA
+      ansible.builtin.include_role:
+        name: certs
+      vars:
+        certs_target: keycloak-oidc
+
+    - name: Step 3 ensure local kind registry
+      ansible.builtin.include_role:
+        name: cluster
+      vars:
+        cluster_action: ensure_registry
+
+    - name: Step 4 initialize OpenTofu roots
+      ansible.builtin.include_role:
+        name: terraform
+      vars:
+        terraform_phase: init
+
+    - name: Step 5 create Kind cluster
+      ansible.builtin.include_role:
+        name: cluster
+      vars:
+        cluster_action: create_kind
+
+    - name: Step 6 re-ensure local kind registry wiring
+      ansible.builtin.include_role:
+        name: cluster
+      vars:
+        cluster_action: ensure_registry
+
+    - name: Step 7 parity with euroscale stack apply
+      ansible.builtin.debug:
+        msg: "Skipping Istio image mirroring (using docker.io/istio directly)."
+
+    - name: Step 8 build and push Backstage image
+      ansible.builtin.include_role:
+        name: backstage
+      vars:
+        backstage_action: build_and_push
+
+    - name: Step 9 apply terraform bootstrap resources
+      ansible.builtin.include_role:
+        name: terraform
+      vars:
+        terraform_phase: cluster-and-base
+
+    - name: Step 10 apply bootstrap Argo root
+      ansible.builtin.include_role:
+        name: terraform
+      vars:
+        terraform_phase: argocd-bootstrap
+
+    - name: Step 11 run OpenBao pre-argo bootstrap
+      ansible.builtin.include_role:
+        name: openbao
+      vars:
+        openbao_action: pre_argo
+
+    - name: Step 12 wait for External Secrets stores to exist (bootstrap CRDs/resources)
+      ansible.builtin.include_role:
+        name: openbao
+      vars:
+        openbao_action: wait_external_secrets_stores_exist
+
+    - name: Step 13 wait for CNPG databases to be Ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - --for=condition=Ready
+          - cluster
+          - "{{ item.name }}"
+          - -n
+          - "{{ item.namespace }}"
+          - --timeout=600s
+      args:
+        chdir: "{{ control_plane_root }}"
+      register: cnpg_wait
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: cnpg_wait.rc == 0
+      loop:
+        - name: keycloak-db
+          namespace: cnpg
+        - name: kcp-db
+          namespace: cnpg
+
+    - name: Step 14 verify SPIRE health
+      ansible.builtin.include_role:
+        name: spire
+      when: spire_enabled | default(true) | bool
+
+    - name: Step 15 service-mesh ArgoCD application is managed via bootstrap root (auto-discovered)
+      ansible.builtin.debug:
+        msg: "service-mesh apps (istio, istio-gateway, istio-mtls, keycloak-routing) are auto-discovered by ArgoCD via bootstrap root -> service-mesh parent Application"
+
+    - name: Step 16 wait for Istio application to sync
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: istio
+        namespace: argocd
+      register: istio_app
+      retries: 120
+      delay: 10
+      until:
+        - istio_app.resources | length > 0
+        - istio_app.resources[0].status.sync.status == "Synced"
+        - istio_app.resources[0].status.health.status == "Healthy"
+
+    - name: Step 17 wait for Istio-gateway application to sync
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: istio-gateway
+        namespace: argocd
+      register: gw_app
+      retries: 120
+      delay: 10
+      until:
+        - gw_app.resources | length > 0
+        - gw_app.resources[0].status.sync.status == "Synced"
+        - gw_app.resources[0].status.health.status == "Healthy"
+
+    - name: Step 18 complete OpenBao post-argo bootstrap (waits for Keycloak OIDC; can take several minutes)
+      ansible.builtin.include_role:
+        name: openbao
+      vars:
+        openbao_action: post_argo
+
+    - name: Step 19 configure OpenBao SPIRE auth method
+      ansible.builtin.include_role:
+        name: openbao_spire
+
+    - name: Step 20 apply Argo root (main apps)
+      ansible.builtin.include_role:
+        name: terraform
+      vars:
+        terraform_phase: argocd-apps
+
+    - name: Step 21 wait for External Secrets stores readiness
+      ansible.builtin.include_role:
+        name: openbao
+      vars:
+        openbao_action: wait_external_secrets_stores_ready
+
+    - name: Step 22 sync KCP kubeconfig into OpenBao
+      ansible.builtin.include_role:
+        name: openbao
+      vars:
+        openbao_action: sync_kcp_kubeconfig
+
+    - name: Step 23 export KCP kubeconfig for kcp-user
+      ansible.builtin.include_role:
+        name: kubecfg
+      vars:
+        kubecfg_action: export_kcp_roles
+
+    - name: Step 24 Finalize ArgoCD backstage token setup
+      ansible.builtin.include_role:
+        name: argocd
+      vars:
+        argocd_action: set_backstage_token
+
+    - name: Step 25 Finalize Backstage app refresh
+      ansible.builtin.include_role:
+        name: backstage
+      vars:
+        backstage_action: refresh
+
+    - name: Step 26 Finalize disable ArgoCD local admin
+      ansible.builtin.include_role:
+        name: terraform
+      vars:
+        terraform_phase: disable_argocd_admin
+
+    - name: Step 27 Finalize enforce Keycloak admin password reset
+      ansible.builtin.include_role:
+        name: keycloak
+      vars:
+        keycloak_action: enforce_password_reset
+      when: keycloak_enforce_admin_password_reset | default(false) | bool
+
+    - name: Step 28 Finalize kubeconfig export
+      ansible.builtin.include_role:
+        name: kubecfg
+      vars:
+        kubecfg_action: export
+
+    - name: Step 29 Finalize ensure agencies workspace in KCP root
+      ansible.builtin.include_role:
+        name: kcp
+      vars:
+        kcp_action: ensure_agencies_workspace
+
+    - name: Step 30 Finalize ensure KCP api-syncagent bootstrap
+      ansible.builtin.include_role:
+        name: kcp
+      vars:
+        kcp_action: ensure_syncagent_bootstrap
+
+    - name: Step 31 Finalize validate access and permissions
+      ansible.builtin.include_role:
+        name: authz_tests
+      when: authz_tests_enabled | default(true) | bool

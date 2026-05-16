@@ -1,0 +1,106 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - realm-import.yaml
+  - keycloak-nodeport.yaml
+  - keycloak-https-proxy-config.yaml
+  - keycloak-https-proxy.yaml
+
+configMapGenerator:
+  - name: service-dns
+    envs:
+      - service-dns.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.ARGOCD_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.0.rootUrl
+          - spec.realm.clients.0.baseUrl
+          - spec.realm.clients.0.adminUrl
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.ARGOCD_CALLBACK_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.0.redirectUris.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.OPENBAO_CALLBACK_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.2.redirectUris.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.BACKSTAGE_CALLBACK_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.3.redirectUris.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.ARGOCD_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.0.webOrigins.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.OPENBAO_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.2.rootUrl
+          - spec.realm.clients.2.webOrigins.0
+          - spec.realm.clients.4.rootUrl
+          - spec.realm.clients.4.baseUrl
+          - spec.realm.clients.4.adminUrl
+          - spec.realm.clients.4.webOrigins.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.BACKSTAGE_URL
+    targets:
+      - select:
+          kind: KeycloakRealmImport
+          name: euroscale-realm
+        fieldPaths:
+          - spec.realm.clients.3.rootUrl
+          - spec.realm.clients.3.webOrigins.0
+          - spec.realm.clients.5.rootUrl
+          - spec.realm.clients.5.baseUrl
+          - spec.realm.clients.5.adminUrl
+          - spec.realm.clients.5.webOrigins.0
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      app.kubernetes.io/part-of: euroscale
+      app.kubernetes.io/managed-by: argocd

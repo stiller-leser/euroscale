@@ -1,0 +1,12 @@
+---
+# Crossplane Provider: Helm
+# Ermöglicht Management von Helm Releases via Crossplane
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-helm
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v0.16.0
+  packagePullPolicy: IfNotPresent

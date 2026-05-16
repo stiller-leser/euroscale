@@ -1,0 +1,156 @@
+---
+- name: Resolve OpenBao pod for bao CLI
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openbao_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name = openbao
+  register: openbao_pods
+  retries: 30
+  delay: 5
+  until: openbao_pods.resources | length > 0
+
+- name: Read OpenBao init log
+  ansible.builtin.slurp:
+    src: "{{ control_plane_root }}/scripts/openbao-init.log"
+  register: openbao_init_log_raw
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Resolve OpenBao root token from env/local log
+  ansible.builtin.set_fact:
+    openbao_root_token: >-
+      {{
+        (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim)
+        if (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim | length > 0)
+        else (
+          (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim)
+          if (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim | length > 0)
+          else (
+            ((openbao_init_log_raw.content | b64decode | from_json).root_token | default('') | trim)
+            if (openbao_init_log_raw is defined and (openbao_init_log_raw.content | default('') | length > 0))
+            else ''
+          )
+        )
+      }}
+  no_log: true
+
+- name: Ensure OpenBao root token is available
+  ansible.builtin.assert:
+    that:
+      - openbao_root_token | length > 0
+    fail_msg: "OpenBao root token missing (OPENBAO_ROOT_TOKEN/VAULT_TOKEN or scripts/openbao-init.log required)."
+
+- name: Fetch SPIRE CA certificate for JWT validation
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ spire_namespace }}"
+      - exec
+      - statefulset/spire-server
+      - --
+      - /opt/spire/bin/spire-server
+      - bundle
+      - show
+      - -format
+      - pem
+  register: spire_ca_cert
+  changed_when: false
+
+- name: Build SPIRE JWT auth config payload
+  ansible.builtin.set_fact:
+    spire_jwt_config: >-
+      {{
+        {
+          'bound_issuer': spire_trust_domain,
+          'jwt_validation_pubkeys': [spire_ca_cert.stdout],
+          'default_role': 'backstage'
+        }
+      }}
+  no_log: true
+
+- name: Encode SPIRE JWT config for shell-safe transport
+  ansible.builtin.set_fact:
+    spire_jwt_config_b64: "{{ spire_jwt_config | to_json | b64encode }}"
+  no_log: false
+
+- name: Enable OpenBao JWT auth at path spire
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+
+    bao() {
+      kubectl -n openbao exec "${pod}" -- \
+        env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+        bao "$@"
+    }
+
+    if ! bao auth list -format=json | grep -q '"spire/"'; then
+      bao auth enable -path=spire jwt >/dev/null
+    fi
+
+    # Pipe config JSON into a temp file inside the container, then write it
+    kubectl -n openbao exec "${pod}" -i -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+      sh -c 't="$(mktemp)"; cat > "$t"; bao write auth/spire/config @"$t" >/dev/null; rm -f "$t"' \
+      <<< "$(printf "%s" "{{ spire_jwt_config_b64 }}" | base64 -d)"
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: false
+
+- name: Write SPIRE workload policies to OpenBao
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+
+    bao() {
+      kubectl -n openbao exec "${pod}" -- \
+        env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+        bao "$@"
+    }
+
+    bao write sys/policies/acl/spire-workload \
+      "policy=$(cat {{ control_plane_root }}/gitops/argocd/bootstrap/apps/secrets-management/openbao/policies/spire-workload.hcl)" >/dev/null
+
+    bao write sys/policies/acl/spire-backstage \
+      "policy=$(cat {{ control_plane_root }}/gitops/argocd/bootstrap/apps/secrets-management/openbao/policies/spire-backstage.hcl)" >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true
+
+- name: Create SPIRE JWT auth roles
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+
+    bao() {
+      kubectl -n openbao exec "${pod}" -- \
+        env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" VAULT_TOKEN="{{ openbao_root_token }}" \
+        bao "$@"
+    }
+
+    bao write auth/spire/role/backstage \
+      role_type=jwt \
+      bound_subject="spiffe://{{ spire_trust_domain }}/backstage/backstage" \
+      user_claim=sub \
+      token_policies=spire-backstage \
+      token_ttl=15m >/dev/null
+
+    bao write auth/spire/role/workload \
+      role_type=jwt \
+      bound_subject="spiffe://{{ spire_trust_domain }}/*" \
+      user_claim=sub \
+      token_policies=spire-workload \
+      token_ttl=1h >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true

@@ -1,0 +1,54 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: istio-base
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: istio-system
+    skipCreateNamespace: true
+    wait: true
+    waitTimeout: 10m
+    chart:
+      name: base
+      repository: https://istio-release.storage.googleapis.com/charts
+      version: "1.27.0"
+---
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: istiod
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: istio-system
+    skipCreateNamespace: true
+    wait: true
+    waitTimeout: 10m
+    chart:
+      name: istiod
+      repository: https://istio-release.storage.googleapis.com/charts
+      version: "1.27.0"
+    values:
+      global:
+        # Primary source; switch to docker.io/istio if this registry is blocked.
+        hub: gcr.io/istio-release
+        tag: "1.27.0"
+        imagePullPolicy: IfNotPresent
+        proxy:
+          autoInject: enabled
+      meshConfig:
+        trustDomain: euroscale.svc.id
+        certificateAuthority:
+          spire:
+            address: spire-agent.spire-system.svc:8081

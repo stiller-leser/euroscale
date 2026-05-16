@@ -1,0 +1,136 @@
+app:
+  title: Euroscale Developer Portal
+  baseUrl: http://localhost:7007
+
+organization:
+  name: Euroscale
+
+backend:
+  baseUrl: http://localhost:7007
+  listen:
+    port: 7007
+    host: 0.0.0.0
+  cors:
+    origin: http://localhost:7007
+    methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+    credentials: true
+  csp:
+    connect-src: ["'self'", 'http:', 'https:']
+  database:
+    client: better-sqlite3
+    connection: ':memory:'
+
+auth:
+  environment: production
+  session:
+    secret: local-dev-backstage-session-secret-change-me
+  providers:
+    oauth2Proxy:
+      signIn:
+        resolvers:
+          - resolver: forwardedUserMatchingUserEntityName
+            dangerouslyAllowSignInWithoutUserInCatalog: true
+
+catalog:
+  rules:
+    - allow: [Component, API, Resource, ResourceDefinition, System, Domain, Location, User, Group, Template]
+  locations:
+    - type: file
+      target: /app/catalog-info.yaml
+  providers:
+    keycloakOrg:
+      default:
+        baseUrl: https://keycloak-nodeport.keycloak.svc.cluster.local:443
+        realm: euroscale
+        loginRealm: master
+        username: ${KEYCLOAK_SYNC_USERNAME}
+        password: ${KEYCLOAK_SYNC_PASSWORD}
+        schedule:
+          frequency: { minutes: 2 }
+          timeout: { minutes: 1 }
+
+kubernetes:
+  serviceLocatorMethod:
+    type: multiTenant
+  clusterLocatorMethods:
+    - type: config
+      clusters:
+        - name: local-kind
+          title: kind-euroscale
+          url: https://kubernetes.default.svc
+          authProvider: serviceAccount
+          skipTLSVerify: true
+
+kubernetesIngestor:
+  enabled: true
+  components:
+    enabled: true
+    taskRunner:
+      frequency: 120
+      timeout: 120
+  crossplane:
+    enabled: true
+    xrds:
+      enabled: true
+      ingestAllXRDs: true
+      taskRunner:
+        frequency: 120
+        timeout: 120
+  mappings:
+    namespaceModel: default
+    nameModel: name
+
+templatePostProcessor:
+  enabled: true
+  profiles:
+    minimal-crossplane-claim:
+      removeParameterGroups:
+        - Crossplane Settings
+        - Creation Settings
+      removeRequired:
+        - owner
+  rules:
+    - profile: minimal-crossplane-claim
+      match:
+        kind: Template
+        sourceLabel: crossplane
+        specTypeRegex: "^[a-z0-9.-]+\\.euro\\.scale$"
+
+crossplane:
+  enablePermissions: true
+  xrds:
+    enabled: true
+  claims:
+    enabled: true
+
+argocd:
+  # UI link target used by the ArgoCD plugin drawers/tables.
+  # API calls still use the proxy URL from entity annotation (default: /argocd/api).
+  baseUrl: https://argocd.internal.euroscale.local
+  appLocatorMethods: []
+
+vault:
+  baseUrl: /api/proxy/openbao
+  secretEngine: euroscale
+  host: http://openbao.openbao.svc.cluster.local:8200
+  namespace: root
+  kvVersion: 2
+
+openbaoRuntimeAuth:
+  mountPath: kubernetes
+  role: backstage
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  refreshSkewSeconds: 60
+  fallbackTokenTtlSeconds: 900
+
+proxy:
+  endpoints:
+    '/argocd/api':
+      target: http://argocd-server.argocd.svc.cluster.local/api/v1
+      changeOrigin: true
+      headers:
+        Authorization: ${ARGOCD_AUTH_HEADER}
+    '/agencies-admin':
+      target: http://agencies-admin-ui.backstage.svc.cluster.local:8080
+      changeOrigin: true
+      credentials: require

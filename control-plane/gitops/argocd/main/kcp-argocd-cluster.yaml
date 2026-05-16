@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kcp-argocd-cluster
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: control-plane
+  source:
+    repoURL: file:///repo
+    targetRevision: HEAD
+    path: control-plane/gitops/argocd/main/apps/infrastructure/kcp-argocd-cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true

@@ -1,0 +1,264 @@
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: agencystack-kcp-workspace
+  labels:
+    provider: kcp
+    environment: multi
+    cluster-class: local-vcluster
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  compositeTypeRef:
+    apiVersion: euro.scale/v1alpha1
+    kind: AgencyStack
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: kcp-workspace
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                providerConfigRef:
+                  name: kcp-root-provider
+                forProvider:
+                  manifest:
+                    apiVersion: tenancy.kcp.io/v1alpha1
+                    kind: Workspace
+                    metadata:
+                      name: placeholder
+                      labels:
+                        euro.scale/agency: placeholder
+                        euro.scale/cluster-class: local-vcluster
+                        euro.scale/target-cluster: in-cluster
+                    spec:
+                      type:
+                        name: universal
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.name
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/agency]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.kcpWorkspace.type
+                toFieldPath: spec.forProvider.manifest.spec.type.name
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.clusterClass
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.class
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/target-cluster]
+                policy:
+                  fromFieldPath: Optional
+          - name: agency-argocd-project
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                providerConfigRef:
+                  name: kubernetes-provider
+                forProvider:
+                  manifest:
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: AppProject
+                    metadata:
+                      name: placeholder
+                      namespace: argocd
+                      labels:
+                        app.kubernetes.io/part-of: agencies
+                        euro.scale/agency: placeholder
+                    spec:
+                      description: Per-agency ArgoCD project generated from AgencyStack
+                      sourceRepos:
+                        - "*"
+                      destinations:
+                        - server: "*"
+                          namespace: "*"
+                        - name: "*"
+                          namespace: "*"
+                      clusterResourceWhitelist:
+                        - group: "*"
+                          kind: "*"
+                      namespaceResourceWhitelist:
+                        - group: "*"
+                          kind: "*"
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.name
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/agency]
+          - name: agency-argocd-application
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                providerConfigRef:
+                  name: kubernetes-provider
+                forProvider:
+                  manifest:
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Application
+                    metadata:
+                      name: placeholder
+                      namespace: argocd
+                      finalizers:
+                        - resources-finalizer.argocd.argoproj.io
+                      labels:
+                        app.kubernetes.io/part-of: agencies
+                        euro.scale/agency: placeholder
+                        euro.scale/cluster-class: local-vcluster
+                        euro.scale/target-cluster: in-cluster
+                    spec:
+                      project: placeholder
+                      source:
+                        repoURL: file:///repo
+                        targetRevision: HEAD
+                        path: agencies/gitops/argocd/main/apps/agencies/agency-bootstrap
+                        helm:
+                          releaseName: placeholder
+                          parameters:
+                            - name: agencyName
+                              value: placeholder
+                            - name: clusterClass
+                              value: local-vcluster
+                            - name: targetClusterName
+                              value: in-cluster
+                      destination:
+                        name: in-cluster
+                        namespace: argocd
+                      syncPolicy:
+                        automated:
+                          prune: true
+                          selfHeal: true
+                        syncOptions:
+                          - CreateNamespace=true
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: metadata.name
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.name
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/agency]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.spec.project
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.releaseName
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[0].value
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.clusterClass
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.clusterClass
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[1].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.clusterClass
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject.provider.type
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.class
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.class
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[1].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.class
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject.provider.type
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/target-cluster]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.spec.destination.name
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[2].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.namespace
+                toFieldPath: spec.forProvider.manifest.spec.destination.namespace
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.server
+                toFieldPath: spec.forProvider.manifest.spec.destination.server
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.bootstrap.path
+                toFieldPath: spec.forProvider.manifest.spec.source.path
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.bootstrap.values
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.members
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject.access.members
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.metadata.name
+                toFieldPath: status.argocdApplication
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.spec.project
+                toFieldPath: status.argocdProject
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                toFieldPath: status.clusterClass
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/target-cluster]
+                toFieldPath: status.targetCluster
+                policy:
+                  fromFieldPath: Optional

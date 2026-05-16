@@ -1,0 +1,52 @@
+FROM node:24-trixie-slim AS build
+
+ENV PYTHON=/usr/bin/python3
+ENV NODE_OPTIONS=--no-node-snapshot
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 g++ build-essential libsqlite3-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY tools/backstage-app/.yarn ./.yarn
+COPY tools/backstage-app/.yarnrc.yml ./
+COPY tools/backstage-app/backstage.json ./
+COPY tools/backstage-app/package.json ./
+COPY tools/backstage-app/yarn.lock ./
+COPY tools/backstage-app/tsconfig.json ./
+COPY tools/backstage-app/app-config.yaml ./
+COPY tools/backstage-app/app-config.production.yaml ./
+COPY tools/backstage-app/catalog-info.yaml ./
+COPY tools/backstage-app/catalog-entities.yaml ./
+COPY tools/backstage-app/examples ./examples
+COPY tools/backstage-app/packages ./packages
+COPY tools/backstage-app/plugins ./plugins
+
+RUN corepack enable \
+  && yarn install \
+  && yarn tsc \
+  && yarn build:backend
+
+FROM node:24-trixie-slim
+
+ENV NODE_ENV=production
+ENV NODE_OPTIONS=--no-node-snapshot
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libsqlite3-0 curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://github.com/spiffe/spire/releases/download/v1.10.0/spire-1.10.0-linux-amd64-musl.tar.gz \
+    | tar xz -C /opt --strip-components=2 spire-1.10.0/bin/spire-agent
+
+ENV PATH="/opt/spire/bin:${PATH}"
+
+WORKDIR /app
+
+COPY --from=build --chown=node:node /app ./
+RUN tar xzf /app/packages/backend/dist/bundle.tar.gz -C /app \
+  && rm -f /app/packages/backend/dist/bundle.tar.gz /app/packages/backend/dist/skeleton.tar.gz \
+  && chmod 755 /app
+
+CMD ["node", "packages/backend", "--config", "app-config.yaml", "--config", "app-config.production.yaml"]

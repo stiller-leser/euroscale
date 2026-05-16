@@ -1,0 +1,43 @@
+{{- if eq (default "local-vcluster" .Values.clusterClass) "local-vcluster" }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "customer.vclusterNamespace" . }}
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+    euro.scale/customer: {{ .Values.customerName | quote }}
+---
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: {{ include "customer.vclusterReleaseName" . }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+    euro.scale/customer: {{ .Values.customerName | quote }}
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: {{ include "customer.vclusterNamespace" . }}
+    skipCreateNamespace: true
+    chart:
+      name: vcluster
+      repository: https://charts.loft.sh
+{{- if .Values.vcluster.chartVersion }}
+      version: {{ .Values.vcluster.chartVersion | quote }}
+{{- end }}
+    values:
+      sync:
+        toHost:
+          ingresses:
+            enabled: true
+{{- with .Values.vcluster.values }}
+{{ toYaml . | nindent 6 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,12 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    control_plane_root: /tmp/euroscale
+    certs_target: keycloak-oidc
+    certs_force: false
+  tasks:
+    - name: Import certs role
+      import_role:
+        name: certs

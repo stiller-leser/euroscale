@@ -1,0 +1,311 @@
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: euroscale-realm
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  keycloakCRName: keycloak
+  realm:
+    id: euroscale
+    realm: euroscale
+    displayName: Euroscale
+    enabled: true
+    roles:
+      realm:
+        # BEGIN AUTHZ GENERATED KEYCLOAK_REALM_ROLES
+        - name: "argocd-admin"
+          description: "ArgoCD administrators"
+        - name: "agencies-admin"
+          description: "Agencies lifecycle administrators"
+        - name: "openbao-admin"
+          description: "OpenBao administrators"
+        - name: "kube-admin"
+          description: "Kubernetes cluster administrators"
+        - name: "kcp-user"
+          description: "KCP workspace user"
+        # END AUTHZ GENERATED KEYCLOAK_REALM_ROLES
+    groups:
+      # BEGIN AUTHZ GENERATED KEYCLOAK_GROUPS
+      - name: "argocd-admin"
+      - name: "agencies-admin"
+      - name: "openbao-admin"
+      - name: "kube-admin"
+      - name: "kcp-user"
+      # END AUTHZ GENERATED KEYCLOAK_GROUPS
+    clients:
+      # ArgoCD: confidential client, OIDC direkt ohne Proxy
+      # Secret wird über KeycloakRealmImport gesetzt und muss mit
+      # euroscale/argocd/oidc-client-secret in OpenBao übereinstimmen.
+      - clientId: argocd
+        name: ArgoCD
+        protocol: openid-connect
+        publicClient: false
+        secret: argocd-local-secret
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        rootUrl: https://argocd.internal.euroscale.local
+        baseUrl: https://argocd.internal.euroscale.local
+        adminUrl: https://argocd.internal.euroscale.local
+        redirectUris:
+          - https://argocd.internal.euroscale.local/auth/callback
+          - http://localhost:30810/auth/callback
+        webOrigins:
+          - https://argocd.internal.euroscale.local
+          - http://localhost:30810
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+
+      - clientId: kubernetes
+        name: Kubernetes
+        protocol: openid-connect
+        publicClient: true
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        redirectUris:
+          - http://127.0.0.1:8000/*
+          - http://localhost:8000/*
+        webOrigins:
+          - http://127.0.0.1:8000
+          - http://localhost:8000
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+
+      # OpenBao OAuth2 Proxy: eigener Client, nur openbao redirect URIs
+      # Secret muss mit euroscale/oauth2-proxy/openbao.client_secret übereinstimmen
+      - clientId: openbao-proxy
+        name: OpenBao OAuth2 Proxy
+        protocol: openid-connect
+        publicClient: false
+        secret: openbao-proxy-local-secret
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        rootUrl: https://openbao.internal.euroscale.local
+        redirectUris:
+          - https://openbao.internal.euroscale.local/oauth2/callback
+        webOrigins:
+          - https://openbao.internal.euroscale.local
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+
+      # Backstage OAuth2 Proxy: eigener Client, nur backstage redirect URIs
+      # Secret muss mit euroscale/oauth2-proxy/backstage.client_secret übereinstimmen
+      - clientId: backstage-proxy
+        name: Backstage OAuth2 Proxy
+        protocol: openid-connect
+        publicClient: false
+        secret: backstage-proxy-local-secret
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        rootUrl: https://backstage.internal.euroscale.local
+        redirectUris:
+          - https://backstage.internal.euroscale.local/oauth2/callback
+          - https://*.agencies.euroscale.local/oauth2/callback
+        webOrigins:
+          - https://backstage.internal.euroscale.local
+          - https://*.agencies.euroscale.local
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+
+      # OpenBao: eigener OIDC Client für OpenBao's eingebaute OIDC Auth Method
+      - clientId: openbao
+        name: OpenBao
+        protocol: openid-connect
+        publicClient: false
+        secret: openbao-local-secret
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        rootUrl: https://openbao.internal.euroscale.local
+        baseUrl: https://openbao.internal.euroscale.local
+        adminUrl: https://openbao.internal.euroscale.local
+        redirectUris:
+          - https://openbao.internal.euroscale.local/ui/vault/auth/oidc/oidc/callback
+          - http://localhost:8200/ui/vault/auth/oidc/oidc/callback
+        webOrigins:
+          - https://openbao.internal.euroscale.local
+          - http://localhost:8200
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+
+      # Backstage: eigener OIDC Client für Backstage's Auth Plugin
+      - clientId: backstage
+        name: Backstage
+        protocol: openid-connect
+        publicClient: false
+        secret: backstage-local-secret
+        standardFlowEnabled: true
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        rootUrl: https://backstage.internal.euroscale.local
+        baseUrl: https://backstage.internal.euroscale.local
+        adminUrl: https://backstage.internal.euroscale.local
+        redirectUris:
+          - https://backstage.internal.euroscale.local/api/auth/oidc/handler/frame
+          - https://*.agencies.euroscale.local/api/auth/oidc/handler/frame
+          - http://localhost:7007/api/auth/oidc/handler/frame
+        webOrigins:
+          - https://backstage.internal.euroscale.local
+          - https://*.agencies.euroscale.local
+          - http://localhost:7007
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            consentRequired: false
+            config:
+              "claim.name": roles
+              "multivalued": "true"
+              "userinfo.token.claim": "true"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+
+    users:
+      # BEGIN AUTHZ GENERATED KEYCLOAK_USERS
+      - username: "argocd-admin"
+        enabled: true
+        emailVerified: true
+        email: "argocd-admin@local"
+        firstName: "Argo"
+        lastName: "CD"
+        requiredActions:
+          - "UPDATE_PASSWORD"
+        realmRoles:
+          - "argocd-admin"
+        groups:
+          - "argocd-admin"
+        credentials:
+          - type: "password"
+            value: "ChangeMe123!"
+            temporary: true
+      - username: "kube-admin"
+        enabled: true
+        emailVerified: true
+        email: "kube-admin@local"
+        firstName: "Kube"
+        lastName: "Admin"
+        requiredActions:
+          - "UPDATE_PASSWORD"
+        realmRoles:
+          - "kube-admin"
+        groups:
+          - "kube-admin"
+        credentials:
+          - type: "password"
+            value: "ChangeMe123!"
+            temporary: true
+      - username: "kcp-user"
+        enabled: true
+        emailVerified: true
+        email: "kcp-user@local"
+        firstName: "KCP"
+        lastName: "User"
+        requiredActions:
+          - "UPDATE_PASSWORD"
+        realmRoles:
+          - "kcp-user"
+        groups:
+          - "kcp-user"
+        credentials:
+          - type: "password"
+            value: "ChangeMe123!"
+            temporary: true
+      - username: "openbao-admin"
+        enabled: true
+        emailVerified: true
+        email: "openbao-admin@local"
+        firstName: "OpenBao"
+        lastName: "Admin"
+        requiredActions:
+          - "UPDATE_PASSWORD"
+        realmRoles:
+          - "openbao-admin"
+        groups:
+          - "openbao-admin"
+        credentials:
+          - type: "password"
+            value: "ChangeMe123!"
+            temporary: true
+      - username: "agencies-admin"
+        enabled: true
+        emailVerified: true
+        email: "agencies-admin@local"
+        firstName: "Agencies"
+        lastName: "Admin"
+        requiredActions:
+          - "UPDATE_PASSWORD"
+        realmRoles:
+          - "agencies-admin"
+        groups:
+          - "agencies-admin"
+        credentials:
+          - type: "password"
+            value: "ChangeMe123!"
+            temporary: true
+      - username: "backstage-sync"
+        enabled: true
+        emailVerified: true
+        email: "backstage-sync@local"
+        firstName: "Backstage"
+        lastName: "Sync"
+        clientRoles:
+          realm-management:
+            - "query-users"
+            - "query-groups"
+            - "view-users"
+            - "view-groups"
+        credentials:
+          - type: "password"
+            value: "backstage-sync-local-secret"
+            temporary: false
+      # END AUTHZ GENERATED KEYCLOAK_USERS

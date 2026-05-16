@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - control-plane-project.yaml
+  - agencies-layer.yaml
+  - customer-layer.yaml
+  - base.yaml
+  - namespaces.yaml
+  - cert-manager.yaml
+  - cert-manager-resources.yaml
+  - spire.yaml
+  - crossplane.yaml
+  - crossplane-providers.yaml
+  - crossplane-resources.yaml
+  - external-secrets-operator.yaml
+  - external-secrets-resources.yaml
+  - openbao.yaml
+  - cloudnative-pg-operator.yaml
+  - cloudnative-pg-resources.yaml
+  - keycloak-operator.yaml
+  - keycloak-resources.yaml
+  - service-mesh.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd
+  app.euroscale.io/stage: bootstrap

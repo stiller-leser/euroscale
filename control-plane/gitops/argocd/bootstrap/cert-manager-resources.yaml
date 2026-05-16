@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-resources
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: control-plane
+  source:
+    repoURL: file:///repo
+    targetRevision: HEAD
+    path: control-plane/gitops/argocd/bootstrap/apps/infrastructure/cert-manager-resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 20
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - CreateNamespace=true

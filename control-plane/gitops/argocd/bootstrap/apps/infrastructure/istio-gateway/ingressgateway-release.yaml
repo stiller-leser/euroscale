@@ -1,0 +1,44 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: istio-ingressgateway
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: istio-system
+    skipCreateNamespace: true
+    wait: true
+    waitTimeout: 10m
+    chart:
+      name: gateway
+      repository: https://istio-release.storage.googleapis.com/charts
+      version: "1.27.0"
+    values:
+      fullnameOverride: istio-ingressgateway
+      global:
+        # Keep gateway aligned with control-plane image source.
+        # Alternative if required: docker.io/istio
+        hub: gcr.io/istio-release
+        tag: "1.27.0"
+        imagePullPolicy: IfNotPresent
+      service:
+        type: NodePort
+        ports:
+          - name: status-port
+            port: 15021
+            targetPort: 15021
+            protocol: TCP
+          - name: http2
+            port: 80
+            targetPort: 8080
+            protocol: TCP
+            nodePort: 30080
+          - name: https
+            port: 443
+            targetPort: 8443
+            protocol: TCP
+            nodePort: 30880

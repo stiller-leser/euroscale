@@ -1,0 +1,6 @@
+apiVersion: v2
+name: customer-bootstrap
+description: Bootstrap chart for customer vcluster and tenant crossplane runtime
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

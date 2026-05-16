@@ -1,0 +1,30 @@
+{{- if and (eq (default "local-vcluster" .Values.clusterClass) "local-vcluster") (default false .Values.network.interconnect.enabled) (eq (default "submariner" .Values.network.interconnect.mode) "submariner") (default true .Values.network.interconnect.submariner.enabled) }}
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: customer-{{ include "customer.id" . }}-submariner-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+    euro.scale/customer: {{ .Values.customerName | quote }}
+spec:
+  providerConfigRef:
+    name: {{ include "customer.crossplaneProviderConfigName" . }}
+  rollbackLimit: 3
+  forProvider:
+    namespace: {{ default "submariner-operator" .Values.network.interconnect.submariner.namespace }}
+    skipCreateNamespace: false
+    chart:
+      name: {{ default "submariner-operator" .Values.network.interconnect.submariner.chart.name | quote }}
+      repository: {{ required "network.interconnect.submariner.chart.repository is required" .Values.network.interconnect.submariner.chart.repository | quote }}
+{{- if .Values.network.interconnect.submariner.chart.version }}
+      version: {{ .Values.network.interconnect.submariner.chart.version | quote }}
+{{- end }}
+{{- with .Values.network.interconnect.submariner.values }}
+    values:
+{{ toYaml . | nindent 6 }}
+{{- end }}
+{{- end }}

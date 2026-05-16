@@ -1,0 +1,17 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: vcluster-controller
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: vcluster-system
+    skipCreateNamespace: true
+    chart:
+      name: vcluster
+      repository: https://charts.loft.sh
+    values: {}

@@ -1,0 +1,12 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    keycloak_namespace: keycloak
+    keycloak_pod_name: keycloak-0
+    keycloak_admin_secret_name: keycloak-admin-credentials
+  tasks:
+    - name: Import keycloak_password_reset role
+      import_role:
+        name: keycloak_password_reset

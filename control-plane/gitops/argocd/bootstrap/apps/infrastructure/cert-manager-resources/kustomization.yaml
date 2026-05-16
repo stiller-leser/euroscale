@@ -1,0 +1,115 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - root-ca-external-secret.yaml
+  - cluster-issuer.yaml
+  - certificates.yaml
+
+configMapGenerator:
+  - name: service-dns
+    envs:
+      - service-dns.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.WILDCARD_INTERNAL_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.commonName
+          - spec.dnsNames.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.ARGOCD_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.dnsNames.1
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.OPENBAO_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.dnsNames.2
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.BACKSTAGE_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.dnsNames.3
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.INTERNAL_BASE_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.dnsNames.4
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.WILDCARD_BASE_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.dnsNames.5
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.BASE_DOMAIN
+    targets:
+      - select:
+          kind: Certificate
+          name: euroscale-local-wildcard-tls
+        fieldPaths:
+          - spec.dnsNames.6
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.KEYCLOAK_HOST
+    targets:
+      - select:
+          kind: Certificate
+          name: keycloak-oidc-tls
+        fieldPaths:
+          - spec.commonName
+          - spec.dnsNames.0
+      - select:
+          kind: Certificate
+          name: keycloak-oidc-tls-gateway
+        fieldPaths:
+          - spec.commonName
+          - spec.dnsNames.0
+      - select:
+          kind: Certificate
+          name: keycloak-oidc-ca
+        fieldPaths:
+          - spec.commonName
+          - spec.dnsNames.0
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd

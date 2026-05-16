@@ -1,0 +1,305 @@
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: customerstack-agency-vcluster
+  labels:
+    provider: kcp
+    environment: multi
+    cluster-class: local-vcluster
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  compositeTypeRef:
+    apiVersion: euro.scale/v1alpha1
+    kind: CustomerStack
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: customer-argocd-application
+            base:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              spec:
+                providerConfigRef:
+                  name: kubernetes-provider
+                forProvider:
+                  manifest:
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Application
+                    metadata:
+                      name: placeholder
+                      namespace: argocd
+                      finalizers:
+                        - resources-finalizer.argocd.argoproj.io
+                      labels:
+                        app.kubernetes.io/part-of: customers
+                        euro.scale/agency: placeholder
+                        euro.scale/customer: placeholder
+                        euro.scale/cluster-class: local-vcluster
+                        euro.scale/target-cluster: in-cluster
+                    spec:
+                      project: placeholder
+                      source:
+                        repoURL: file:///repo
+                        targetRevision: HEAD
+                        path: customer/gitops/argocd/main/apps/customers/customer-bootstrap
+                        helm:
+                          releaseName: placeholder
+                          parameters:
+                            - name: agencyName
+                              value: placeholder
+                            - name: customerName
+                              value: placeholder
+                            - name: workspacePath
+                              value: root:agencies
+                            - name: clusterClass
+                              value: local-vcluster
+                            - name: targetClusterName
+                              value: in-cluster
+                            - name: targetNamespace
+                              value: argocd
+                            - name: network.interconnect.enabled
+                              value: "true"
+                            - name: network.interconnect.mode
+                              value: submariner
+                            - name: network.interconnect.cableDriver
+                              value: wireguard
+                            - name: network.interconnect.globalnet
+                              value: "false"
+                            - name: network.interconnect.autoJoin.enabled
+                              value: "false"
+                            - name: network.interconnect.autoJoin.clusterCIDR
+                              value: ""
+                            - name: network.interconnect.autoJoin.serviceCIDR
+                              value: ""
+                            - name: network.interconnect.autoJoin.brokerInfoSecretRef.name
+                              value: submariner-broker-info
+                            - name: network.interconnect.autoJoin.brokerInfoSecretRef.key
+                              value: broker-info.subm
+                            - name: argocd.applicationName
+                              value: placeholder
+                      destination:
+                        name: in-cluster
+                        namespace: argocd
+                      syncPolicy:
+                        automated:
+                          prune: true
+                          selfHeal: true
+                        syncOptions:
+                          - CreateNamespace=true
+            patches:
+              - type: CombineFromComposite
+                combine:
+                  strategy: string
+                  string:
+                    fmt: customer-%s-%s
+                  variables:
+                    - fromFieldPath: spec.agencyName
+                    - fromFieldPath: spec.customerName
+                toFieldPath: metadata.name
+              - type: CombineFromComposite
+                combine:
+                  strategy: string
+                  string:
+                    fmt: customer-%s-%s
+                  variables:
+                    - fromFieldPath: spec.agencyName
+                    - fromFieldPath: spec.customerName
+                toFieldPath: spec.forProvider.manifest.metadata.name
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/agency]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.customerName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/customer]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.spec.project
+              - type: CombineFromComposite
+                combine:
+                  strategy: string
+                  string:
+                    fmt: customer-%s-%s
+                  variables:
+                    - fromFieldPath: spec.agencyName
+                    - fromFieldPath: spec.customerName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.releaseName
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.agencyName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[0].value
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.customerName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[1].value
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.kcp.workspacePath
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[2].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: metadata.annotations[kcp.io/cluster]
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[2].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.class
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.class
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[3].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/target-cluster]
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.spec.destination.name
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.argocdClusterName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[4].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.namespace
+                toFieldPath: spec.forProvider.manifest.spec.destination.namespace
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.namespace
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[5].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.target.server
+                toFieldPath: spec.forProvider.manifest.spec.destination.server
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.provider
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject.provider
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cluster.vcluster
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject.vcluster
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.members
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.valuesObject.access.members
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.enabled
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[6].value
+                transforms:
+                  - type: convert
+                    convert:
+                      toType: string
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.mode
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[7].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.cableDriver
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[8].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.globalnet
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[9].value
+                transforms:
+                  - type: convert
+                    convert:
+                      toType: string
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.autoJoin.enabled
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[10].value
+                transforms:
+                  - type: convert
+                    convert:
+                      toType: string
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.autoJoin.clusterCIDR
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[11].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.autoJoin.serviceCIDR
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[12].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.autoJoin.brokerInfoSecretName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[13].value
+                policy:
+                  fromFieldPath: Optional
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.network.interconnect.autoJoin.brokerInfoSecretKey
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[14].value
+                policy:
+                  fromFieldPath: Optional
+              - type: CombineFromComposite
+                combine:
+                  strategy: string
+                  string:
+                    fmt: customer-%s-%s
+                  variables:
+                    - fromFieldPath: spec.agencyName
+                    - fromFieldPath: spec.customerName
+                toFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[15].value
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.metadata.name
+                toFieldPath: status.argocdApplication
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.spec.project
+                toFieldPath: status.argocdProject
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/cluster-class]
+                toFieldPath: status.clusterClass
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.metadata.labels[euro.scale/target-cluster]
+                toFieldPath: status.targetCluster
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[2].value
+                toFieldPath: status.workspacePath
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[8].value
+                toFieldPath: status.cableDriver
+                policy:
+                  fromFieldPath: Optional
+              - type: ToCompositeFieldPath
+                fromFieldPath: spec.forProvider.manifest.spec.source.helm.parameters[7].value
+                toFieldPath: status.interconnectMode
+                policy:
+                  fromFieldPath: Optional

@@ -1,0 +1,339 @@
+---
+#
+# export - Main cluster kubeconfigs (kind + OIDC for humans/technical)
+#
+
+- name: Create kubeconfig directories
+  ansible.builtin.file:
+    path: "{{ control_plane_root }}/kubeconfig/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - humans
+    - technical
+  when: kubecfg_action == "export"
+
+- name: Export kind kubeconfig
+  ansible.builtin.command:
+    argv:
+      - kind
+      - export
+      - kubeconfig
+      - --name
+      - "{{ cluster_name }}"
+      - --kubeconfig
+      - "{{ control_plane_root }}/kubeconfig/kind.kubeconfig"
+  args:
+    chdir: "{{ control_plane_root }}"
+  when:
+    - kubecfg_action == "export"
+    - cluster_type == "kind"
+
+- name: Copy existing kubeconfig for remote clusters
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    dest: "{{ control_plane_root }}/kubeconfig/kind.kubeconfig"
+    remote_src: true
+    mode: "0644"
+  when:
+    - kubecfg_action == "export"
+    - cluster_type != "kind"
+
+- name: Copy base kubeconfig to technical directory
+  ansible.builtin.copy:
+    src: "{{ control_plane_root }}/kubeconfig/kind.kubeconfig"
+    dest: "{{ control_plane_root }}/kubeconfig/technical/kind.kubeconfig"
+    remote_src: true
+    mode: "0644"
+  when: kubecfg_action == "export"
+
+- name: Read cluster server and CA from kubeconfig
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - config
+      - view
+      - --kubeconfig={{ control_plane_root }}/kubeconfig/kind.kubeconfig
+      - --raw
+      - -o
+      - json
+  register: kcfg_cluster
+  changed_when: false
+  when: kubecfg_action == "export"
+
+- name: Set kubeconfig context facts
+  ansible.builtin.set_fact:
+    kcfg_context_name: >-
+      {{
+        ('kind-' + cluster_name)
+        if (cluster_type | default('kind')) == 'kind'
+        else cluster_name
+      }}
+    kcfg_server_url: "{{ (kcfg_cluster.stdout | from_json).clusters[0].cluster.server }}"
+    kcfg_ca_data: "{{ (kcfg_cluster.stdout | from_json).clusters[0].cluster['certificate-authority-data'] }}"
+  when: kubecfg_action == "export"
+
+- name: Build OIDC template vars
+  ansible.builtin.set_fact:
+    oidc_issuer_url: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ISSUER_URL') | default('https://keycloak.internal.euroscale.local/realms/euroscale', true) }}"
+    oidc_client_id: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_CLIENT_ID') | default('kubernetes', true) }}"
+    oidc_listen_address: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_LISTEN_ADDRESS') | default('127.0.0.1:8000', true) }}"
+    oidc_ca_file: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_OIDC_CA_FILE') | default(control_plane_root ~ '/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt', true) }}"
+  when: kubecfg_action in ["export", "export_kcp_roles"]
+
+- name: Render OIDC kubeconfig for each user type
+  ansible.builtin.copy:
+    dest: "{{ control_plane_root }}/kubeconfig/{{ item.dir }}/keycloak.kubeconfig"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - name: {{ kcfg_context_name }}
+        cluster:
+          server: {{ kcfg_server_url }}
+          certificate-authority-data: {{ kcfg_ca_data }}
+      users:
+      - name: {{ item.user }}
+        user:
+          exec:
+            apiVersion: client.authentication.k8s.io/v1beta1
+            command: kubectl
+            args:
+            - oidc-login
+            - get-token
+            - --oidc-issuer-url={{ oidc_issuer_url }}
+            - --oidc-client-id={{ oidc_client_id }}
+            - --listen-address={{ oidc_listen_address }}
+            - --certificate-authority={{ oidc_ca_file }}
+            - --oidc-extra-scope=openid
+            - --oidc-extra-scope=profile
+            - --oidc-extra-scope=email
+            - --oidc-extra-scope=roles
+      contexts:
+      - name: {{ item.user }}-{{ kcfg_context_name }}
+        context:
+          cluster: {{ kcfg_context_name }}
+          user: {{ item.user }}
+      current-context: {{ item.user }}-{{ kcfg_context_name }}
+  loop:
+    - dir: humans
+      user: "{{ kube_oidc_kubeconfig_user | default('kube-admin', true) }}"
+    - dir: technical
+      user: "{{ kube_oidc_technical_user | default('keycloak-technical', true) }}"
+  when: kubecfg_action == "export"
+
+- name: Copy human kubeconfig to user-specific filename
+  ansible.builtin.copy:
+    src: "{{ control_plane_root }}/kubeconfig/humans/keycloak.kubeconfig"
+    dest: "{{ control_plane_root }}/kubeconfig/humans/{{ kube_oidc_kubeconfig_user | default('kube-admin', true) }}.kubeconfig"
+    remote_src: true
+    mode: "0600"
+  when:
+    - kubecfg_action == "export"
+    - (kube_oidc_kubeconfig_user | default('kube-admin', true)) != 'keycloak'
+
+#
+# export_kcp_roles - KCP OIDC kubeconfigs per user
+#
+
+- name: Create KCP kubeconfig directory
+  ansible.builtin.file:
+    path: "{{ control_plane_root }}/kubeconfig/kcp"
+    state: directory
+    mode: "0755"
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Remove legacy KCP kubeconfigs from old roles directory
+  ansible.builtin.file:
+    path: "{{ control_plane_root }}/kubeconfig/kcp/roles"
+    state: absent
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Wait for KCP deployment to be Available
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ lookup('ansible.builtin.env', 'KCP_NAMESPACE') | default('kcp', true) }}"
+      - wait
+      - --for=condition=Available
+      - "deployment/{{ lookup('ansible.builtin.env', 'KCP_DEPLOYMENT') | default('kcp', true) }}"
+      - --timeout=900s
+  changed_when: false
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Find and set KCP admin kubeconfig path inside pod
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ns="{{ lookup('ansible.builtin.env', 'KCP_NAMESPACE') | default('kcp', true) }}"
+    dep="{{ lookup('ansible.builtin.env', 'KCP_DEPLOYMENT') | default('kcp', true) }}"
+    kubectl exec -n "$ns" "deployment/$dep" -- sh -c '
+      for p in \
+        /data/admin.kubeconfig \
+        /root/.kcp/admin.kubeconfig \
+        /home/kcp/.kcp/admin.kubeconfig \
+        /home/nonroot/.kcp/admin.kubeconfig \
+        /.kcp/admin.kubeconfig
+      do
+        if [ -s "$p" ]; then
+          echo "$p"
+          exit 0
+        fi
+      done
+      path="$(find /data /root /home /.kcp -maxdepth 5 -type f -name admin.kubeconfig 2>/dev/null | head -n1)"
+      if [ -n "$path" ]; then
+        echo "$path"
+        exit 0
+      fi
+      echo "Unable to locate admin.kubeconfig in KCP deployment $dep." >&2
+      exit 1
+    '
+  args:
+    executable: /bin/bash
+  register: kcp_admin_path_cmd
+  changed_when: false
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Extract KCP admin kubeconfig from pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ lookup('ansible.builtin.env', 'KCP_NAMESPACE') | default('kcp', true) }}"
+      - exec
+      - "deployment/{{ lookup('ansible.builtin.env', 'KCP_DEPLOYMENT') | default('kcp', true) }}"
+      - --
+      - sh
+      - -lc
+      - "cat {{ kcp_admin_path_cmd.stdout }}"
+  register: kcp_admin_kubeconfig_content
+  changed_when: false
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Write KCP admin kubeconfig to temp file
+  ansible.builtin.copy:
+    dest: "{{ control_plane_root }}/kubeconfig/kcp/.kcp-admin.tmp.kubeconfig"
+    content: "{{ kcp_admin_kubeconfig_content.stdout }}"
+    mode: "0600"
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Read KCP server URL and CA from admin kubeconfig
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - config
+      - view
+      - --kubeconfig={{ control_plane_root }}/kubeconfig/kcp/.kcp-admin.tmp.kubeconfig
+      - --raw
+      - -o
+      - json
+  register: kcp_kcfg_cluster
+  changed_when: false
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Read KCP CA data from cert-manager TLS secret (preferred)
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lookup('ansible.builtin.env', 'KCP_NAMESPACE') | default('kcp', true) }}"
+    name: kcp-server-tls
+  register: kcp_tls_secret
+  failed_when: false
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Resolve KCP server URL and CA data
+  ansible.builtin.set_fact:
+    kcp_kcfg_url: >-
+      {{
+        lookup('ansible.builtin.env', 'KCP_OIDC_KUBECONFIG_SERVER_URL')
+        | default(kcp_oidc_kubeconfig_server_url | default('', true), true)
+        | default((kcp_kcfg_cluster.stdout | from_json).clusters[0].cluster.server, true)
+      }}
+    kcp_kcfg_ca_data: >-
+      {{
+        (kcp_tls_secret.resources[0].data['ca.crt'])
+        if (kcp_tls_secret.resources | default([]) | length > 0
+            and kcp_tls_secret.resources[0].data['ca.crt'] | default('') | length > 0)
+        else (kcp_kcfg_cluster.stdout | from_json).clusters[0].cluster['certificate-authority-data']
+      }}
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Append /clusters/root to KCP server URL for workspace support
+  ansible.builtin.set_fact:
+    kcp_kcfg_url: "{{ kcp_kcfg_url.rstrip('/') }}/clusters/root"
+  when:
+    - kubecfg_action == "export_kcp_roles"
+    - "'/clusters/' not in kcp_kcfg_url"
+
+- name: Set KCP TLS server name
+  ansible.builtin.set_fact:
+    kcp_tls_server_name: >-
+      {{
+        (kcp_oidc_kubeconfig_tls_server_name | default('', true))
+        if (kcp_oidc_kubeconfig_tls_server_name | default('', true)) | length > 0
+        else (kcp_kcfg_url | urlsplit('hostname'))
+      }}
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Assert KCP TLS server name is set
+  ansible.builtin.assert:
+    that:
+      - kcp_tls_server_name | length > 0
+    fail_msg: "Unable to derive tls-server-name for KCP kubeconfig."
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Build KCP users list
+  ansible.builtin.set_fact:
+    kcp_users: >-
+      {{
+        ([kcp_oidc_kubeconfig_user | default('kcp-user', true)] + (kcp_oidc_kubeconfig_users | default([])))
+        | map('trim') | reject('equalto', '') | list | unique
+      }}
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Assert KCP users list is not empty
+  ansible.builtin.assert:
+    that:
+      - kcp_users | length > 0
+    fail_msg: "No KCP kubeconfig users resolved."
+  when: kubecfg_action == "export_kcp_roles"
+
+- name: Render KCP OIDC kubeconfig per user
+  ansible.builtin.copy:
+    dest: "{{ control_plane_root }}/kubeconfig/kcp/{{ item }}.kubeconfig"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - name: kcp-root
+        cluster:
+          server: {{ kcp_kcfg_url }}
+          tls-server-name: {{ kcp_tls_server_name }}
+          certificate-authority-data: {{ kcp_kcfg_ca_data }}
+      users:
+      - name: {{ item }}
+        user:
+          exec:
+            apiVersion: client.authentication.k8s.io/v1beta1
+            command: kubectl
+            args:
+            - oidc-login
+            - get-token
+            - --oidc-issuer-url={{ oidc_issuer_url }}
+            - --oidc-client-id={{ oidc_client_id }}
+            - --listen-address={{ oidc_listen_address }}
+            - --certificate-authority={{ oidc_ca_file }}
+            - --oidc-extra-scope=openid
+            - --oidc-extra-scope=profile
+            - --oidc-extra-scope=email
+            - --oidc-extra-scope=roles
+      contexts:
+      - name: {{ item }}-kcp-root
+        context:
+          cluster: kcp-root
+          user: {{ item }}
+      current-context: {{ item }}-kcp-root
+  loop: "{{ kcp_users }}"
+  when: kubecfg_action == "export_kcp_roles"

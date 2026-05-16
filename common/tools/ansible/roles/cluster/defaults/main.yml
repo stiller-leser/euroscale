@@ -1,0 +1,11 @@
+---
+cluster_type: kind
+cluster_name: euroscale
+local_registry_name: kind-registry
+local_registry_port: 5001
+local_registry_addr: "localhost:{{ local_registry_port }}"
+kind_network: kind
+kind_node_image: kindest/node:v1.34.2
+euroscale_root_path: /home/kajmo/workspace/euroscale
+kind_oidc_ca_host_path: "{{ euroscale_root_path }}/control-plane/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt"
+kind_oidc_ca_container_path: "/workspace/euroscale/control-plane/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt"

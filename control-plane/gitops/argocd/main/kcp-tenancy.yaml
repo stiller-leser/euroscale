@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kcp-tenancy
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: control-plane
+  source:
+    repoURL: file:///repo
+    targetRevision: HEAD
+    path: control-plane/gitops/argocd/main/apps/infrastructure/kcp-tenancy
+  destination:
+    name: kcp-root
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 20
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m

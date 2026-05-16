@@ -1,0 +1,6 @@
+collections:
+  - name: community.kubernetes
+  - name: community.hashi_vault
+  - name: community.docker
+  - name: kubernetes.core
+  - name: community.crypto

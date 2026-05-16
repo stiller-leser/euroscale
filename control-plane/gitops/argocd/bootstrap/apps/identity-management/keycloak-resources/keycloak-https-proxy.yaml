@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-https-proxy
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-https-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-https-proxy
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27.5-alpine
+        ports:
+        - containerPort: 8443
+          name: https
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: tls-cert
+          mountPath: /etc/nginx/tls
+          readOnly: true
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: keycloak-https-proxy-config
+      - name: tls-cert
+        secret:
+          secretName: keycloak-oidc-tls

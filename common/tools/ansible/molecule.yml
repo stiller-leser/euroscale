@@ -1,0 +1,22 @@
+---
+driver:
+  name: docker
+platforms:
+  - name: molecule-test
+    image: ubuntu:22.04
+    pre_build_image: true
+    command: sleep infinity
+    tty: true
+    bind_strategy: none
+    exposed_ports:
+      6443/tcp: 6443
+      8200/tcp: 8200
+      8080/tcp: 8080
+provisioner:
+  name: ansible
+  inventory:
+    host_vars:
+      molecule-test:
+        ansible_python_interpreter: /usr/bin/python3
+verifier:
+  name: ansible

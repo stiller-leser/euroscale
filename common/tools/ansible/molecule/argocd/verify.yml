@@ -1,0 +1,14 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    argocd_action: set_backstage_token
+  tasks:
+    - name: Import argocd role
+      import_role:
+        name: argocd
+
+    - name: Verify argocd role executed
+      ansible.builtin.debug:
+        msg: "argocd role executed"

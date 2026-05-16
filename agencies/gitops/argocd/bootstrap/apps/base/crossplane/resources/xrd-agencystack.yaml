@@ -1,0 +1,203 @@
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: agencystacks.euro.scale
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    terasky.backstage.io/add-to-catalog: "true"
+    terasky.backstage.io/owner: group:default/agencies-admins
+    terasky.backstage.io/system: euroscale
+    backstage.euroscale.io/scope: agencies-xrd
+spec:
+  group: euro.scale
+  scope: Cluster
+
+  names:
+    kind: AgencyStack
+    plural: agencystacks
+
+
+  defaultCompositionRef:
+    name: agencystack-kcp-workspace
+
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: Agency workspace specification.
+              properties:
+                agencyName:
+                  type: string
+                  description: Agency name used as KCP workspace name.
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  maxLength: 20
+                members:
+                  type: array
+                  description: Agency member emails allowed to access the agency Backstage endpoint.
+                  items:
+                    type: string
+                    format: email
+                clusterClass:
+                  type: string
+                  description: Deprecated compatibility field. Use spec.cluster.class.
+                  enum:
+                    - local-vcluster
+                    - external
+                    - eks
+                    - gke
+                    - aks
+                    - gardener-shoot
+                kcpWorkspace:
+                  type: object
+                  description: KCP workspace configuration.
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - universal
+                        - home
+                        - organization
+                      default: universal
+                cluster:
+                  type: object
+                  description: Workload cluster placement and provider-specific settings.
+                  properties:
+                    class:
+                      type: string
+                      description: Provider class selected for this agency.
+                      enum:
+                        - local-vcluster
+                        - external
+                        - eks
+                        - gke
+                        - aks
+                        - gardener-shoot
+                      default: local-vcluster
+                    target:
+                      type: object
+                      description: ArgoCD destination settings for agency workloads.
+                      properties:
+                        argocdClusterName:
+                          type: string
+                          description: ArgoCD cluster destination name.
+                          default: in-cluster
+                        server:
+                          type: string
+                          description: Optional explicit destination server URL.
+                        namespace:
+                          type: string
+                          description: Destination namespace for agency apps.
+                          default: argocd
+                    bootstrap:
+                      type: object
+                      description: Bootstrap app source overrides.
+                      properties:
+                        path:
+                          type: string
+                          description: Repo path used by the agency ArgoCD Application.
+                          default: agencies/gitops/argocd/main/apps/agencies/agency-bootstrap
+                        values:
+                          type: object
+                          description: Additional Helm values for agency bootstrap.
+                          x-kubernetes-preserve-unknown-fields: true
+                    provider:
+                      type: object
+                      description: Provider-specific parameters (EKS/GKE/AKS/Gardener/etc).
+                      x-kubernetes-preserve-unknown-fields: true
+                    vcluster:
+                      type: object
+                      description: vCluster specific configuration (currently implemented class).
+                      properties:
+                        chartVersion:
+                          type: string
+                          description: Optional vcluster chart version override.
+                        values:
+                          type: object
+                          description: Additional Helm values for vcluster chart.
+                          x-kubernetes-preserve-unknown-fields: true
+                    vault:
+                      type: object
+                      description: OpenBao per-agency vault configuration.
+                      properties:
+                        mountName:
+                          type: string
+                          description: Optional OpenBao KV mount name override. Defaults to agency-{agencyName}.
+                        roleName:
+                          type: string
+                          description: Optional OpenBao kubernetes auth role override used by agency SecretStore.
+                        secretStoreName:
+                          type: string
+                          description: Optional SecretStore name override.
+                          default: vault-agency
+              required:
+                - agencyName
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                  description: True when the agency workspace is ready.
+                kcpWorkspaceURL:
+                  type: string
+                  description: URL of the KCP workspace.
+                clusterClass:
+                  type: string
+                  description: Effective provider class used by the composition.
+                targetCluster:
+                  type: string
+                  description: Effective ArgoCD destination cluster name.
+                argocdApplication:
+                  type: string
+                  description: Name of the generated agency ArgoCD Application.
+                argocdProject:
+                  type: string
+                  description: Name of the generated agency ArgoCD AppProject.
+                vclusterRelease:
+                  type: string
+                  description: Crossplane Helm release name for the agency vcluster.
+                vclusterNamespace:
+                  type: string
+                  description: Namespace where the agency vcluster is installed.
+                vaultMount:
+                  type: string
+                  description: Effective OpenBao mount allocated for the agency.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+
+      additionalPrinterColumns:
+        - name: Agency
+          type: string
+          jsonPath: .spec.agencyName
+        - name: Class
+          type: string
+          jsonPath: .spec.cluster.class
+        - name: Target
+          type: string
+          jsonPath: .spec.cluster.target.argocdClusterName
+        - name: Ready
+          type: string
+          jsonPath: .status.ready
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

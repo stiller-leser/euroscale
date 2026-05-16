@@ -1,0 +1,135 @@
+---
+- name: Initialize bootstrap OpenTofu root
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - init
+      - -input=false
+  args:
+    chdir: "{{ terraform_cluster_and_base_dir }}"
+  when: terraform_phase == "init"
+
+- name: Initialize argo-bootstrap OpenTofu root
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - init
+      - -input=false
+  args:
+    chdir: "{{ terraform_argocd_bootstrap_dir }}"
+  when: terraform_phase == "init"
+
+- name: Initialize argo OpenTofu root
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - init
+      - -input=false
+  args:
+    chdir: "{{ terraform_argocd_apps_dir }}"
+  when: terraform_phase == "init"
+
+- name: Remove legacy ArgoCD OIDC secret from cluster-and-base Terraform state
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - state
+      - rm
+      - kubernetes_secret.argocd_oidc_secret
+  args:
+    chdir: "{{ terraform_cluster_and_base_dir }}"
+  register: remove_legacy_argocd_oidc_state
+  changed_when: remove_legacy_argocd_oidc_state.rc == 0
+  failed_when: remove_legacy_argocd_oidc_state.rc not in [0, 1]
+  when: terraform_phase in ["cluster-and-base", "disable_argocd_admin"]
+
+- name: Apply terraform cluster-and-base resources
+  when: terraform_phase == "cluster-and-base"
+  block:
+    - name: Cluster-and-base apply with ArgoCD local admin enabled
+      ansible.builtin.command:
+        argv:
+          - tofu
+          - apply
+          - -auto-approve
+        chdir: "{{ terraform_cluster_and_base_dir }}"
+      environment:
+        TF_VAR_argocd_local_admin_enabled: "true"
+        TF_VAR_base_domain: "{{ base_domain }}"
+        CLUSTER_NAME: "{{ euroscale_env.CLUSTER_NAME }}"
+      register: cluster_and_base_apply
+      until: >-
+        cluster_and_base_apply is success or
+        cluster_and_base_apply.stderr is not defined or
+        "Error locating chart" not in (cluster_and_base_apply.stderr | default(''))
+      retries: 3
+      delay: 5
+
+  rescue:
+    - name: Re-export kind kubeconfig before final retry
+      ansible.builtin.command:
+        argv:
+          - kind
+          - export
+          - kubeconfig
+          - --name
+          - "{{ cluster_name }}"
+      args:
+        chdir: "{{ control_plane_root }}"
+      when: cluster_type | default('kind') == "kind"
+
+    - name: Final cluster-and-base apply retry
+      ansible.builtin.command:
+        argv:
+          - tofu
+          - apply
+          - -auto-approve
+        chdir: "{{ terraform_cluster_and_base_dir }}"
+      environment:
+        TF_VAR_argocd_local_admin_enabled: "true"
+        CLUSTER_NAME: "{{ euroscale_env.CLUSTER_NAME }}"
+      register: bootstrap_apply
+      until: >-
+        bootstrap_apply is success or
+        bootstrap_apply.stderr is not defined or
+        "Error locating chart" not in (bootstrap_apply.stderr | default(''))
+      retries: 3
+      delay: 5
+
+- name: Apply terraform argocd-bootstrap root
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - apply
+      - -auto-approve
+  args:
+    chdir: "{{ terraform_argocd_bootstrap_dir }}"
+  environment:
+    TF_VAR_base_domain: "{{ base_domain }}"
+  when: terraform_phase == "argocd-bootstrap"
+
+- name: Apply terraform argocd-apps root
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - apply
+      - -auto-approve
+  args:
+    chdir: "{{ terraform_argocd_apps_dir }}"
+  environment:
+    TF_VAR_base_domain: "{{ base_domain }}"
+  when: terraform_phase == "argocd-apps"
+
+- name: Apply cluster-and-base terraform with ArgoCD local admin disabled
+  ansible.builtin.command:
+    argv:
+      - tofu
+      - apply
+      - -auto-approve
+  args:
+    chdir: "{{ terraform_cluster_and_base_dir }}"
+  environment:
+    TF_VAR_argocd_local_admin_enabled: "false"
+    TF_VAR_base_domain: "{{ base_domain }}"
+    CLUSTER_NAME: "{{ euroscale_env.CLUSTER_NAME }}"
+  when: terraform_phase == "disable_argocd_admin"

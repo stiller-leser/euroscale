@@ -1,0 +1,42 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: external-secrets
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: external-secrets
+    skipCreateNamespace: true
+    chart:
+      name: external-secrets
+      repository: https://charts.external-secrets.io
+    values:
+      installCRDs: true
+      serviceAccount:
+        create: true
+        name: external-secrets
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+      webhook:
+        enabled: true
+        port: 9443
+      certController:
+        enabled: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+      metrics:
+        enabled: false

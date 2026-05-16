@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: keycloak
+
+resources:
+  - keycloak-internal-virtualservice.yaml
+
+configMapGenerator:
+  - name: service-dns-keycloak-routing
+    envs:
+      - service-dns.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: service-dns-keycloak-routing
+      fieldPath: data.KEYCLOAK_HOST
+    targets:
+      - select:
+          kind: VirtualService
+          name: keycloak-internal
+        fieldPaths:
+          - spec.hosts.0
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd

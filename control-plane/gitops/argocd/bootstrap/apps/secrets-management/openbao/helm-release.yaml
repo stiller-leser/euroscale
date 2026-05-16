@@ -1,0 +1,84 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: openbao
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: openbao
+    skipCreateNamespace: true
+    chart:
+      name: openbao
+      repository: https://openbao.github.io/openbao-helm
+    values:
+      global:
+        enabled: true
+      server:
+        image:
+          repository: openbao/openbao
+          tag: "2.5.0"
+        dev:
+          enabled: false
+        standalone:
+          enabled: true
+        service:
+          type: NodePort
+          targetPort: 8200
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        extraContainers:
+          - name: keycloak-loopback-proxy
+            image: alpine/socat:1.8.0.0
+            args:
+              - "TCP-LISTEN:30843,fork,reuseaddr,bind=127.0.0.1"
+              - "TCP:keycloak-nodeport.keycloak.svc.cluster.local:443"
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 65534
+          - name: keycloak-loopback-proxy-443
+            image: alpine/socat:1.8.0.0
+            args:
+              - "TCP-LISTEN:443,fork,reuseaddr,bind=127.0.0.1"
+              - "TCP:keycloak-nodeport.keycloak.svc.cluster.local:443"
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+              runAsNonRoot: false
+              capabilities:
+                add:
+                  - NET_BIND_SERVICE
+        extraEnvironmentVars:
+          VAULT_ADDR: "http://127.0.0.1:8200"
+          VAULT_UI: "true"
+        volumes:
+          - name: spire-agent-socket
+            csi:
+              driver: csi.spiffe.io
+              readOnly: true
+        extraVolumeMounts:
+          - name: spire-agent-socket
+            mountPath: /run/spire/sockets
+            readOnly: true
+        dataStorage:
+          enabled: true
+          size: 1Gi
+        auditStorage:
+          enabled: false
+      ui:
+        image:
+          repository: openbao/openbao
+          tag: "2.5.0"
+        enabled: true
+        serviceType: NodePort
+      injector:
+        enabled: false

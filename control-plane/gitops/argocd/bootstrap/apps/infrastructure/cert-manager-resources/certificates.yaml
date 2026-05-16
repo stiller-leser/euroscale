@@ -1,0 +1,78 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: euroscale-local-wildcard-tls
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  secretName: euroscale-local-wildcard-tls
+  issuerRef:
+    name: euroscale-local-ca
+    kind: ClusterIssuer
+  commonName: "*.internal.euroscale.local"
+  dnsNames:
+    - "*.internal.euroscale.local"
+    - "argocd.internal.euroscale.local"
+    - "openbao.internal.euroscale.local"
+    - "backstage.internal.euroscale.local"
+    - "internal.euroscale.local"
+    - "*.euroscale.local"
+    - "euroscale.local"
+    - "*.agencies.euroscale.local"
+    - "agencies.euroscale.local"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-oidc-tls
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  secretName: keycloak-oidc-tls
+  issuerRef:
+    name: euroscale-local-ca
+    kind: ClusterIssuer
+  commonName: "keycloak.internal.euroscale.local"
+  dnsNames:
+    - "keycloak.internal.euroscale.local"
+    - "localhost"
+    - "keycloak-https-proxy"
+    - "keycloak-https-proxy.keycloak"
+    - "keycloak-https-proxy.keycloak.svc"
+    - "keycloak-https-proxy.keycloak.svc.cluster.local"
+  ipAddresses:
+    - "127.0.0.1"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-oidc-tls-gateway
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  secretName: keycloak-oidc-tls
+  issuerRef:
+    name: euroscale-local-ca
+    kind: ClusterIssuer
+  commonName: "keycloak.internal.euroscale.local"
+  dnsNames:
+    - "keycloak.internal.euroscale.local"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-oidc-ca
+  namespace: oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  secretName: keycloak-oidc-ca
+  issuerRef:
+    name: euroscale-local-ca
+    kind: ClusterIssuer
+  commonName: "keycloak.internal.euroscale.local"
+  dnsNames:
+    - "keycloak.internal.euroscale.local"

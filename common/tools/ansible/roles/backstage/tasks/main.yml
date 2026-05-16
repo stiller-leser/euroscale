@@ -1,0 +1,203 @@
+---
+- name: Ensure local registry before backstage image build
+  ansible.builtin.include_role:
+    name: cluster
+  vars:
+    cluster_action: ensure_registry
+  when: backstage_action == "build_and_push"
+
+- name: Build backstage image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - build
+      - -t
+      - "{{ backstage_image }}"
+      - -f
+      - "{{ control_plane_root }}/gitops/argocd/main/apps/infrastructure/backstage/Dockerfile.oidc"
+      - "{{ control_plane_root }}"
+  args:
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  when: backstage_action == "build_and_push"
+
+- name: Push backstage image with helper-free Docker config
+  when: backstage_action == "build_and_push"
+  block:
+    - name: Create temporary Docker config directory for push
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: backstage-docker-config-
+      register: backstage_docker_config_dir
+
+    - name: Write Docker config without credential helper
+      ansible.builtin.copy:
+        dest: "{{ backstage_docker_config_dir.path }}/config.json"
+        mode: "0600"
+        content: |
+          {
+            "auths": {}
+          }
+
+    - name: Push backstage image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - push
+          - "{{ backstage_image }}"
+      args:
+        chdir: "{{ control_plane_root }}"
+      environment: "{{ euroscale_env | combine({'DOCKER_CONFIG': backstage_docker_config_dir.path}) }}"
+  always:
+    - name: Remove temporary Docker config directory
+      ansible.builtin.file:
+        path: "{{ backstage_docker_config_dir.path | default('') }}"
+        state: absent
+      when: backstage_docker_config_dir is defined
+
+- name: Trigger backstage app hard refresh in ArgoCD
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - annotate
+      - application
+      - backstage
+      - argocd.argoproj.io/refresh=hard
+      - --overwrite
+  args:
+    chdir: "{{ control_plane_root }}"
+  changed_when: false
+  failed_when: false
+  when: backstage_action in ["build_and_push", "refresh"]
+
+- name: Check Backstage ArgoCD application presence
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: argocd
+    name: backstage
+  register: backstage_argocd_app
+  changed_when: false
+  failed_when: false
+  when: backstage_action == "refresh"
+
+- name: Ensure Backstage ArgoCD application exists before refresh
+  ansible.builtin.assert:
+    that:
+      - backstage_argocd_app.resources | length > 0
+    fail_msg: >-
+      ArgoCD Application 'backstage' does not exist in namespace 'argocd'.
+      Ensure Step 14 (terraform argo phase) applied main applications successfully.
+  when: backstage_action == "refresh"
+
+- name: Trigger Backstage ArgoCD sync operation after refresh
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - patch
+      - application
+      - backstage
+      - --type
+      - merge
+      - -p
+      - '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true"]}}}'
+  args:
+    chdir: "{{ control_plane_root }}"
+  changed_when: false
+  when: backstage_action == "refresh"
+
+- name: Wait for Backstage ArgoCD sync to report Synced/Healthy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - get
+      - application
+      - backstage
+      - -o
+      - jsonpath={.status.sync.status}{"|"}{.status.health.status}{"|"}{.status.operationState.phase}
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: backstage_app_sync_state
+  changed_when: false
+  retries: 60
+  delay: 5
+  until:
+    - backstage_app_sync_state.stdout is search('^Synced\\|Healthy\\|Succeeded$')
+  when: backstage_action == "refresh"
+
+- name: Discover Backstage deployments after refresh
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: backstage
+  register: backstage_deployments
+  changed_when: false
+  failed_when: false
+  when: backstage_action == "refresh"
+
+- name: List all Backstage deployment names
+  ansible.builtin.set_fact:
+    backstage_deployment_names: >-
+      {{
+        backstage_deployments.resources | default([])
+        | map(attribute='metadata.name') | list
+      }}
+  when: backstage_action == "refresh"
+
+- name: Select Backstage deployment name (prefer backstage-prefix)
+  ansible.builtin.set_fact:
+    backstage_deployment_name: >-
+      {{
+        (backstage_deployment_names | select('match', '^backstage') | first)
+        | default(backstage_deployment_names | first)
+        | default('')
+      }}
+  when: backstage_action == "refresh"
+
+- name: Skip Backstage rollout restart when deployment is not present yet
+  ansible.builtin.debug:
+    msg: >-
+      Backstage refresh requested but no deployment exists in namespace 'backstage' yet;
+      skipping rollout restart/wait and relying on ArgoCD sync to create it.
+  when:
+    - backstage_action == "refresh"
+    - backstage_deployment_name | default('') | trim | length == 0
+
+- name: Rollout restart Backstage deployment after refresh
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - backstage
+      - rollout
+      - restart
+      - "deployment/{{ backstage_deployment_name }}"
+  args:
+    chdir: "{{ control_plane_root }}"
+  changed_when: true
+  when:
+    - backstage_action == "refresh"
+    - backstage_deployment_name | default('') | trim | length > 0
+
+- name: Wait for Backstage rollout after refresh
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - backstage
+      - rollout
+      - status
+      - "deployment/{{ backstage_deployment_name }}"
+      - --timeout=300s
+  args:
+    chdir: "{{ control_plane_root }}"
+  changed_when: false
+  when:
+    - backstage_action == "refresh"
+    - backstage_deployment_name | default('') | trim | length > 0

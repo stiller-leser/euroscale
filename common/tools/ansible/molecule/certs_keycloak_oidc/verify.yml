@@ -1,0 +1,96 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    certs_ensure_keycloak_oidc: true
+    certs_apply_to_k8s: false
+    certs_output_dir: /tmp/euroscale-certs/keycloak-oidc
+    keycloak_oidc_ca_key: "{{ certs_output_dir }}/oidc-ca.key"
+    keycloak_oidc_ca_csr: "{{ certs_output_dir }}/oidc-ca.csr"
+    keycloak_oidc_ca_crt: "{{ certs_output_dir }}/oidc-ca.crt"
+    keycloak_oidc_tls_key: "{{ certs_output_dir }}/oidc-tls.key"
+    keycloak_oidc_tls_csr: "{{ certs_output_dir }}/oidc-tls.csr"
+    keycloak_oidc_tls_crt: "{{ certs_output_dir }}/oidc-tls.crt"
+  tasks:
+    - name: Import certs_keycloak_oidc role
+      import_role:
+        name: certs_keycloak_oidc
+
+    - name: Verify CA private key exists
+      ansible.builtin.stat:
+        path: "{{ keycloak_oidc_ca_key }}"
+      register: ca_key_stat
+
+    - name: Verify CA certificate exists
+      ansible.builtin.stat:
+        path: "{{ keycloak_oidc_ca_crt }}"
+      register: ca_crt_stat
+
+    - name: Verify TLS private key exists
+      ansible.builtin.stat:
+        path: "{{ keycloak_oidc_tls_key }}"
+      register: tls_key_stat
+
+    - name: Verify TLS certificate exists
+      ansible.builtin.stat:
+        path: "{{ keycloak_oidc_tls_crt }}"
+      register: tls_crt_stat
+
+    - name: Verify CA private key is valid RSA
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - rsa
+          - -in
+          - "{{ keycloak_oidc_ca_key }}"
+          - -check
+          - -noout
+      changed_when: false
+      register: ca_key_check
+
+    - name: Verify CA certificate is valid and has CA basic constraint
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ keycloak_oidc_ca_crt }}"
+          - -noout
+          - -text
+      changed_when: false
+      register: ca_crt_check
+
+    - name: Verify TLS certificate is signed by CA
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - verify
+          - CAfile
+          - "{{ keycloak_oidc_ca_crt }}"
+          - "{{ keycloak_oidc_tls_crt }}"
+      changed_when: false
+      register: tls_verify
+
+    - name: Assert CA certificate created
+      ansible.builtin.assert:
+        that:
+          - ca_key_stat.stat.exists
+          - ca_crt_stat.stat.exists
+          - ca_key_check.rc == 0
+          - ca_crt_check.rc == 0
+        fail_msg: "CA certificate not properly created"
+
+    - name: Assert TLS certificate created
+      ansible.builtin.assert:
+        that:
+          - tls_key_stat.stat.exists
+          - tls_crt_stat.stat.exists
+          - tls_verify.rc == 0
+        fail_msg: "TLS certificate not properly created"
+
+    - name: Verify TLS certificate has serverAuth EKU
+      ansible.builtin.assert:
+        that:
+          - "'TLS Web Server Authentication' in ca_crt_check.stdout"
+        fail_msg: "CA certificate missing basic constraints"

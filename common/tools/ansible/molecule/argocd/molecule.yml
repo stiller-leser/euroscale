@@ -1,0 +1,10 @@
+---
+driver:
+  name: docker
+platforms:
+  - name: molecule-test
+    image: docker.io/ubuntu:24.04
+provisioner:
+  name: ansible
+verifier:
+  name: ansible

@@ -1,0 +1,19 @@
+{{- if eq (default "local-vcluster" .Values.clusterClass) "local-vcluster" }}
+apiVersion: helm.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: {{ include "customer.crossplaneProviderConfigName" . }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+    euro.scale/customer: {{ .Values.customerName | quote }}
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: {{ include "customer.vclusterNamespace" . }}
+      name: {{ include "customer.kubeconfigSecretName" . }}
+      key: config
+{{- end }}

@@ -1,0 +1,33 @@
+p, role:admin, *, *, */*, allow
+p, role:backstage-read, applications, get, *, allow
+p, role:backstage-read, applications, get, */*, allow
+p, role:backstage-read, applications, get, */*/*, allow
+p, role:backstage-read, projects, get, *, allow
+p, role:backstage-read, repositories, get, *, allow
+p, role:backstage-read, clusters, get, *, allow
+p, role:agencies-read, applications, get, agencies/*, allow
+p, role:agencies-read, projects, get, agencies, allow
+p, role:agencies-read, repositories, get, *, allow
+p, role:agencies-read, clusters, get, *, allow
+p, backstage, applications, get, *, allow
+p, backstage, applications, get, */*, allow
+p, backstage, applications, get, */*/*, allow
+p, backstage:apiKey, applications, get, *, allow
+p, backstage:apiKey, applications, get, */*, allow
+p, backstage:apiKey, applications, get, */*/*, allow
+p, backstage, projects, get, *, allow
+p, backstage:apiKey, projects, get, *, allow
+p, backstage, repositories, get, *, allow
+p, backstage:apiKey, repositories, get, *, allow
+p, backstage, clusters, get, *, allow
+p, backstage:apiKey, clusters, get, *, allow
+g, backstage, role:backstage-read
+g, backstage:apiKey, role:backstage-read
+g, argocd-admin, role:admin
+g, argocd-admins, role:admin
+g, agencies-admin, role:agencies-read
+g, agencies-admins, role:agencies-read
+g, /argocd-admin, role:admin
+g, /argocd-admins, role:admin
+g, /agencies-admin, role:agencies-read
+g, /agencies-admins, role:agencies-read

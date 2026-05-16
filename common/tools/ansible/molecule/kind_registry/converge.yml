@@ -1,0 +1,15 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    local_registry_enable: true
+    local_registry_name: kind-registry
+    local_registry_port: "5001"
+    local_registry_network: kind
+    local_registry_configmap: false
+    local_registry_configure_on_kind: false
+  tasks:
+    - name: Import kind_registry role
+      import_role:
+        name: kind_registry

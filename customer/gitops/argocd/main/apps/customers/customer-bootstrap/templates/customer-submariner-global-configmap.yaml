@@ -1,0 +1,25 @@
+{{- if and (eq (default "local-vcluster" .Values.clusterClass) "local-vcluster") (default false .Values.network.interconnect.enabled) (eq (default "submariner" .Values.network.interconnect.mode) "submariner") }}
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: customer-{{ include "customer.id" . }}-submariner-global
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+    euro.scale/customer: {{ .Values.customerName | quote }}
+spec:
+  providerConfigRef:
+    name: {{ include "customer.kubernetesProviderConfigName" . }}
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: submariner-global
+        namespace: kube-system
+      data:
+        use-nftables: "false"
+{{- end }}

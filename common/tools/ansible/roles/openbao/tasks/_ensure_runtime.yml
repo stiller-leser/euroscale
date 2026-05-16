@@ -1,0 +1,388 @@
+---
+- name: Read OpenBao init log
+  ansible.builtin.slurp:
+    src: "{{ control_plane_root }}/scripts/openbao-init.log"
+  register: openbao_init_log_raw
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Wait for ArgoCD OpenBao application to exist
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - argocd
+      - get
+      - application
+      - openbao
+      - -o
+      - name
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: openbao_app_probe
+  changed_when: false
+  failed_when: false
+  retries: 180
+  delay: 5
+  until: openbao_app_probe.rc == 0
+
+- name: Ensure ArgoCD OpenBao application was created
+  ansible.builtin.assert:
+    that:
+      - openbao_app_probe.rc == 0
+    fail_msg: >-
+      ArgoCD application 'openbao' was not created in time.
+      Check bootstrap app sync-wave order and ArgoCD app health.
+
+- name: Get OpenBao pod
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: openbao
+    label_selectors:
+      - app.kubernetes.io/name=openbao
+  register: openbao_pods
+  retries: 120
+  delay: 5
+  until: (openbao_pods.resources | length) > 0
+
+- name: Ensure OpenBao pod exists
+  ansible.builtin.assert:
+    that:
+      - (openbao_pods.resources | length) > 0
+
+- name: Wait until OpenBao API is ready for init/status operations
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao status -format=json 2>/dev/null || true
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_status_probe
+  changed_when: false
+  retries: 600
+  delay: 2
+  until: >-
+    (openbao_status_probe.stdout | default('') | trim | length) > 0 and
+    ('"version"' in (openbao_status_probe.stdout | default('')))
+  no_log: true
+
+- name: Read OpenBao init/seal status
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    raw="$(kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao status -format=json 2>/dev/null || true)"
+    RAW_STATUS="${raw}" python3 - <<'PY'
+    import json
+    import os
+    import sys
+
+    fallback = {"initialized": False, "sealed": True}
+    s = os.environ.get("RAW_STATUS", "")
+    i = s.find("{")
+    if i < 0:
+        print(json.dumps(fallback))
+        sys.exit(0)
+    sub = s[i:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(sub)
+    except Exception:
+        obj = fallback
+    print(json.dumps(obj))
+    PY
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_status_before_raw
+  changed_when: false
+
+- name: Parse OpenBao status before runtime actions
+  ansible.builtin.set_fact:
+    openbao_status_before: "{{ openbao_status_before_raw.stdout | from_json }}"
+
+- name: Initialize OpenBao when uninitialized
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao operator init -key-shares=5 -key-threshold=3 -format=json
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_init_run
+  no_log: true
+  changed_when: openbao_init_run.rc == 0
+  failed_when: false
+  retries: 20
+  delay: 3
+  until: >-
+    (openbao_init_run.rc == 0) or
+    ('already initialized' in ((openbao_init_run.stdout | default('')) ~ ' ' ~ (openbao_init_run.stderr | default('')) | lower))
+  when: not (openbao_status_before.initialized | default(false) | bool)
+
+- name: Persist OpenBao init output to local log
+  ansible.builtin.copy:
+    dest: "{{ control_plane_root }}/scripts/openbao-init.log"
+    content: "{{ openbao_init_run.stdout }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - openbao_init_run is defined
+    - openbao_init_run.rc | default(1) == 0
+    - (openbao_init_run.stdout | default('') | trim | length) > 0
+
+- name: Reload OpenBao init log after potential init
+  ansible.builtin.slurp:
+    src: "{{ control_plane_root }}/scripts/openbao-init.log"
+  register: openbao_init_log_raw
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Resolve OpenBao root token from env/local log
+  ansible.builtin.set_fact:
+    openbao_root_token: >-
+      {{
+        (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim)
+        if (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim | length > 0)
+        else (
+          (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim)
+          if (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim | length > 0)
+          else (
+            ((openbao_init_log_raw.content | b64decode | from_json).root_token | default('') | trim)
+            if (openbao_init_log_raw is defined and (openbao_init_log_raw.content | default('') | length > 0))
+            else ''
+          )
+        )
+      }}
+  no_log: true
+
+- name: Ensure OpenBao root token is available
+  ansible.builtin.assert:
+    that:
+      - openbao_root_token | length > 0
+    fail_msg: "OpenBao root token missing (OPENBAO_ROOT_TOKEN/VAULT_TOKEN or scripts/openbao-init.log required)."
+
+- name: Read OpenBao status after potential init
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    raw="$(kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao status -format=json 2>/dev/null || true)"
+    RAW_STATUS="${raw}" python3 - <<'PY'
+    import json
+    import os
+    import sys
+
+    fallback = {"initialized": False, "sealed": True}
+    s = os.environ.get("RAW_STATUS", "")
+    i = s.find("{")
+    if i < 0:
+        print(json.dumps(fallback))
+        sys.exit(0)
+    sub = s[i:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(sub)
+    except Exception:
+        obj = fallback
+    print(json.dumps(obj))
+    PY
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_status_after_init_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse OpenBao status after potential init
+  ansible.builtin.set_fact:
+    openbao_status_after_init: "{{ openbao_status_after_init_raw.stdout | from_json }}"
+
+- name: Retry OpenBao init when still uninitialized
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao operator init -key-shares=5 -key-threshold=3 -format=json
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_init_retry_run
+  no_log: true
+  changed_when: openbao_init_retry_run.rc == 0
+  failed_when: false
+  retries: 30
+  delay: 3
+  until: >-
+    (openbao_init_retry_run.rc == 0) or
+    ('already initialized' in ((openbao_init_retry_run.stdout | default('')) ~ ' ' ~ (openbao_init_retry_run.stderr | default('')) | lower))
+  when: not (openbao_status_after_init.initialized | default(false) | bool)
+
+- name: Persist OpenBao retry-init output to local log
+  ansible.builtin.copy:
+    dest: "{{ control_plane_root }}/scripts/openbao-init.log"
+    content: "{{ openbao_init_retry_run.stdout }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - openbao_init_retry_run is defined
+    - openbao_init_retry_run.rc | default(1) == 0
+    - (openbao_init_retry_run.stdout | default('') | trim | length) > 0
+
+- name: Ensure OpenBao retry-init reached a valid end state
+  ansible.builtin.assert:
+    that:
+      - >
+        (openbao_init_retry_run.rc == 0) or
+        ('already initialized' in ((openbao_init_retry_run.stdout | default('')) ~ ' ' ~ (openbao_init_retry_run.stderr | default('')) | lower))
+    fail_msg: "OpenBao retry-init failed and did not report 'already initialized'."
+  when:
+    - openbao_init_retry_run is defined
+    - not (openbao_status_after_init.initialized | default(false) | bool)
+
+- name: Reload OpenBao init log after retry-init
+  ansible.builtin.slurp:
+    src: "{{ control_plane_root }}/scripts/openbao-init.log"
+  register: openbao_init_log_raw
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Re-read OpenBao status after retry-init
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    raw="$(kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao status -format=json 2>/dev/null || true)"
+    RAW_STATUS="${raw}" python3 - <<'PY'
+    import json
+    import os
+    import sys
+
+    fallback = {"initialized": False, "sealed": True}
+    s = os.environ.get("RAW_STATUS", "")
+    i = s.find("{")
+    if i < 0:
+        print(json.dumps(fallback))
+        sys.exit(0)
+    sub = s[i:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(sub)
+    except Exception:
+        obj = fallback
+    print(json.dumps(obj))
+    PY
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_status_after_init_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse OpenBao status after retry-init
+  ansible.builtin.set_fact:
+    openbao_status_after_init: "{{ openbao_status_after_init_raw.stdout | from_json }}"
+
+- name: Ensure OpenBao is initialized before unseal flow
+  ansible.builtin.assert:
+    that:
+      - openbao_status_after_init.initialized | default(false) | bool
+    fail_msg: >-
+      OpenBao is still uninitialized after automatic init attempts.
+      Run `make openbao-init` and re-run `make apply`.
+
+- name: Resolve OpenBao unseal keys from local log
+  ansible.builtin.set_fact:
+    openbao_unseal_keys: >-
+      {{
+        (openbao_init_log_raw.content | b64decode | from_json).unseal_keys_b64
+        | default((openbao_init_log_raw.content | b64decode | from_json).keys | default([]))
+      }}
+  no_log: true
+  when: openbao_status_after_init.sealed | default(true) | bool
+
+- name: Ensure enough OpenBao unseal keys are available
+  ansible.builtin.assert:
+    that:
+      - (openbao_unseal_keys | length) > 0
+    fail_msg: "OpenBao is sealed but scripts/openbao-init.log does not contain unseal keys."
+  when: openbao_status_after_init.sealed | default(true) | bool
+
+- name: Attempt OpenBao unseal with keys from local log
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao operator unseal "{{ item }}" >/dev/null
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  no_log: true
+  changed_when: false
+  failed_when: false
+  loop: "{{ openbao_unseal_keys }}"
+  loop_control:
+    label: "unseal-key-{{ ansible_loop.index }}"
+    extended: true
+  when: openbao_status_after_init.sealed | default(true) | bool
+
+- name: Read final OpenBao status
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pod="{{ openbao_pods.resources[0].metadata.name }}"
+    raw="$(kubectl -n openbao exec "${pod}" -- env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" bao status -format=json 2>/dev/null || true)"
+    RAW_STATUS="${raw}" python3 - <<'PY'
+    import json
+    import os
+    import sys
+
+    fallback = {"initialized": False, "sealed": True}
+    s = os.environ.get("RAW_STATUS", "")
+    i = s.find("{")
+    if i < 0:
+        print(json.dumps(fallback))
+        sys.exit(0)
+    sub = s[i:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(sub)
+    except Exception:
+        obj = fallback
+    print(json.dumps(obj))
+    PY
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  environment: "{{ euroscale_env }}"
+  register: openbao_status_final_raw
+  changed_when: false
+  retries: 30
+  delay: 2
+  until: >-
+    (
+      (openbao_status_final_raw.stdout | default('{"initialized":false,"sealed":true}') | from_json).initialized
+      | default(false)
+      | bool
+    ) and not (
+      (openbao_status_final_raw.stdout | default('{"initialized":false,"sealed":true}') | from_json).sealed
+      | default(true)
+      | bool
+    )
+
+- name: Parse final OpenBao status
+  ansible.builtin.set_fact:
+    openbao_status_final: "{{ openbao_status_final_raw.stdout | from_json }}"
+
+- name: Ensure OpenBao runtime state is healthy
+  ansible.builtin.assert:
+    that:
+      - openbao_status_final.initialized | default(false) | bool
+      - not (openbao_status_final.sealed | default(true) | bool)
+    fail_msg: >-
+      OpenBao runtime state invalid (initialized={{ openbao_status_final.initialized | default('unknown') }},
+      sealed={{ openbao_status_final.sealed | default('unknown') }}).
+      Local unseal keys from scripts/openbao-init.log did not unseal the instance.
+      Ensure scripts/openbao-init.log belongs to this cluster instance (run make openbao-init if needed).

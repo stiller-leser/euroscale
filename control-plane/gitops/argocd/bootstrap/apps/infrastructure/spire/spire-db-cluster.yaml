@@ -1,0 +1,18 @@
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: spire-db
+  namespace: spire-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: spire
+      owner: spire
+      secret:
+        name: spire-db-owner

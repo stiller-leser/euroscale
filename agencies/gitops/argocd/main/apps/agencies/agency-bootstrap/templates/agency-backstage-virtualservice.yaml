@@ -1,0 +1,23 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: backstage-{{ required "agencyName is required" .Values.agencyName }}
+  namespace: oauth2-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  hosts:
+    - {{ printf "%s.agencies.euroscale.local" .Values.agencyName | quote }}
+  gateways:
+    - istio-system/euroscale-internal-gateway
+  http:
+    - match:
+        - uri:
+            exact: /
+      redirect:
+        uri: {{ printf "/catalog/default/component/argocd-%s" .Values.agencyName | quote }}
+    - route:
+        - destination:
+            host: {{ printf "backstage-%s-oauth2-proxy.oauth2-proxy.svc.cluster.local" .Values.agencyName | quote }}
+            port:
+              number: 80

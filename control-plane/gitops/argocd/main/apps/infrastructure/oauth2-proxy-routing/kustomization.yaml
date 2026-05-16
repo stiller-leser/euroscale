@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: oauth2-proxy
+
+resources:
+  - virtual-services.yaml
+
+configMapGenerator:
+  - name: service-dns
+    envs:
+      - service-dns.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.ARGOCD_HOST
+    targets:
+      - select:
+          kind: VirtualService
+          name: argocd-internal
+        fieldPaths:
+          - spec.hosts.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.OPENBAO_HOST
+    targets:
+      - select:
+          kind: VirtualService
+          name: openbao-internal
+        fieldPaths:
+          - spec.hosts.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.BACKSTAGE_HOST
+    targets:
+      - select:
+          kind: VirtualService
+          name: backstage-internal
+        fieldPaths:
+          - spec.hosts.0
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd

@@ -1,0 +1,77 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: istio-system
+
+resources:
+  - ingressgateway-release.yaml
+  - gateway.yaml
+
+configMapGenerator:
+  - name: service-dns
+    envs:
+      - service-dns.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.ARGOCD_HOST
+    targets:
+      - select:
+          kind: Gateway
+          name: euroscale-internal-gateway
+        fieldPaths:
+          - spec.servers.0.hosts.0
+          - spec.servers.1.hosts.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.OPENBAO_HOST
+    targets:
+      - select:
+          kind: Gateway
+          name: euroscale-internal-gateway
+        fieldPaths:
+          - spec.servers.0.hosts.1
+          - spec.servers.1.hosts.1
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.BACKSTAGE_HOST
+    targets:
+      - select:
+          kind: Gateway
+          name: euroscale-internal-gateway
+        fieldPaths:
+          - spec.servers.0.hosts.2
+          - spec.servers.1.hosts.2
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.KEYCLOAK_HOST
+    targets:
+      - select:
+          kind: Gateway
+          name: euroscale-internal-gateway
+        fieldPaths:
+          - spec.servers.0.hosts.3
+          - spec.servers.2.hosts.0
+  - source:
+      kind: ConfigMap
+      name: service-dns
+      fieldPath: data.KCP_HOST
+    targets:
+      - select:
+          kind: Gateway
+          name: euroscale-internal-gateway
+        fieldPaths:
+          - spec.servers.0.hosts.4
+          - spec.servers.3.hosts.0
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd

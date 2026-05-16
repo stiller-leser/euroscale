@@ -1,0 +1,112 @@
+---
+# KCP Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kcp
+  namespace: kcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kcp
+  template:
+    metadata:
+      labels:
+        app: kcp
+    spec:
+      containers:
+      - name: kcp
+        image: ghcr.io/kcp-dev/kcp:v0.31.0
+        args:
+        - start
+        - --etcd-servers=http://kine.kcp.svc.cluster.local:2379
+        - --external-hostname=kcp.internal.euroscale.local
+        - --shard-external-url=https://kcp.internal.euroscale.local
+        - --shard-base-url=https://kcp.internal.euroscale.local
+        - --tls-cert-file=/etc/kcp/tls/tls.crt
+        - --tls-private-key-file=/etc/kcp/tls/tls.key
+        - --oidc-issuer-url=https://keycloak.internal.euroscale.local/realms/euroscale
+        - --oidc-client-id=kubernetes
+        - --oidc-ca-file=/etc/kcp/oidc/ca.crt
+        - --oidc-username-claim=preferred_username
+        - --oidc-username-prefix=-
+        - --oidc-groups-claim=roles
+        - "--oidc-groups-prefix=oidc:"
+        ports:
+        - name: api
+          containerPort: 6443
+          protocol: TCP
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /etc/kcp
+        - name: tls
+          mountPath: /etc/kcp/tls
+          readOnly: true
+        - name: oidc-ca
+          mountPath: /etc/kcp/oidc
+          readOnly: true
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: 6443
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 6443
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: kcp-config
+      - name: tls
+        secret:
+          secretName: kcp-server-tls
+      - name: oidc-ca
+        secret:
+          secretName: kcp-keycloak-oidc-ca
+---
+# KCP ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kcp-config
+  namespace: kcp
+data:
+  kcp.yaml: |
+    # KCP Configuration
+    etcd:
+      embedded: false
+      servers:
+        - http://kine.kcp.svc.cluster.local:2379
+    
+    shards:
+      - name: root
+        externalURL: https://kcp.kcp.svc.cluster.local:6443
+    
+    # Virtual Workspace Configuration
+    virtualWorkspaces:
+      enabled: true
+    
+    # Server Configuration
+    server:
+      listen: 0.0.0.0:6443
+      rootDirectory: /data

@@ -1,0 +1,23 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kcp-server-tls
+  namespace: kcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: kcp-server-tls
+  issuerRef:
+    name: euroscale-local-ca
+    kind: ClusterIssuer
+  commonName: "kcp.internal.euroscale.local"
+  dnsNames:
+    - "kcp.internal.euroscale.local"
+    - "localhost"
+    - "kcp"
+    - "kcp.kcp"
+    - "kcp.kcp.svc"
+    - "kcp.kcp.svc.cluster.local"
+  ipAddresses:
+    - "127.0.0.1"

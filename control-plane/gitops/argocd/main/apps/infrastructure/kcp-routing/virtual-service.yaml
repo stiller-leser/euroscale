@@ -1,0 +1,22 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: kcp-internal
+  namespace: kcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  hosts:
+    - kcp.internal.euroscale.local
+  gateways:
+    - istio-system/euroscale-internal-gateway
+  tls:
+    - match:
+        - port: 443
+          sniHosts:
+            - kcp.internal.euroscale.local
+      route:
+        - destination:
+            host: kcp.kcp.svc.cluster.local
+            port:
+              number: 6443

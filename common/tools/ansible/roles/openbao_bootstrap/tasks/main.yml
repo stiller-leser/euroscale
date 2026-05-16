@@ -1,0 +1,66 @@
+---
+- name: Wait for OpenBao pod readiness
+  tags: [openbao_bootstrap, openbao]
+  when: openbao_bootstrap_wait_ready | default(true)
+  block:
+    - name: Check OpenBao pod exists
+      k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ openbao_namespace }}"
+        label_selector: app.kubernetes.io/name=openbao
+      register: openbao_pods
+      until: openbao_pods.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: false
+
+    - name: Set OpenBao pod name fact
+      set_fact:
+        openbao_pod_name: "{{ openbao_pods.resources[0].metadata.name }}"
+      when: openbao_pods.resources | length > 0
+
+- name: Wait for OpenBao to be ready
+  tags: [openbao_bootstrap, openbao]
+  when: openbao_bootstrap_wait_ready | default(true) and openbao_pod_name is defined
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Pod
+      name: "{{ openbao_pod_name }}"
+      namespace: "{{ openbao_namespace }}"
+      status: .status.conditions[?(@.type=="Ready")].status=="True"
+  register: result
+  retries: 30
+  delay: 10
+  until: result is succeeded
+  failed_when: false
+
+- name: Ensure KV mounts exist
+  tags: [openbao_bootstrap, openbao]
+  community.hashi_vault.vault_write:
+    url: "{{ openbao_address }}"
+    token: "{{ openbao_token }}"
+    path: "sys/mounts/{{ item }}"
+    data:
+      type: kv-v2
+  loop:
+    - "{{ openbao_mount_kv | default('secret') }}"
+    - "{{ openbao_mount_agencies | default('agencies') }}"
+  ignore_errors: true
+
+- name: Write initial secrets to OpenBao
+  tags: [openbao_bootstrap, openbao]
+  community.hashi_vault.vault_kv2_write:
+    url: "{{ openbao_address }}"
+    token: "{{ openbao_token }}"
+    path: "{{ item.path }}"
+    data: "{{ item.data }}"
+  loop:
+    - { path: "euroscale/cnpg/superuser", data: { username: "{{ cnpg_username }}", password: "{{ cnpg_password }}" } }
+    - { path: "euroscale/keycloak/postgres", data: { username: "{{ keycloak_db_username }}", password: "{{ keycloak_db_password }}", host: "{{ keycloak_db_host }}", database: "{{ keycloak_db_name }}" } }
+    - { path: "euroscale/keycloak/admin", data: { username: "admin", password: "{{ keycloak_admin_password }}" } }
+    - { path: "euroscale/backstage-sync", data: { username: "{{ backstage_sync_username }}", password: "{{ backstage_sync_password }}" } }
+    - { path: "euroscale/argocd/admin", data: { username: "admin", password: "{{ argocd_admin_password }}" } }
+  ignore_errors: true

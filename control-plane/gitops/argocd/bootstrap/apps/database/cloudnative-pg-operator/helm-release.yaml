@@ -1,0 +1,26 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: cnpg
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: cnpg
+    skipCreateNamespace: true
+    chart:
+      name: cloudnative-pg
+      repository: https://cloudnative-pg.github.io/charts
+    values:
+      config:
+        clusterWide: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi

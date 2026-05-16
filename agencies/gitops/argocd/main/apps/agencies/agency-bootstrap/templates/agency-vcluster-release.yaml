@@ -1,0 +1,32 @@
+{{- if eq (default "local-vcluster" .Values.clusterClass) "local-vcluster" }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vcluster-{{ required "agencyName is required" .Values.agencyName }}
+  labels:
+    app.kubernetes.io/part-of: agencies
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+---
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: agency-{{ .Values.agencyName }}-vcluster
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: vcluster-{{ .Values.agencyName }}
+    skipCreateNamespace: true
+    chart:
+      name: vcluster
+      repository: https://charts.loft.sh
+    values:
+      sync:
+        toHost:
+          ingresses:
+            enabled: true
+{{- end }}

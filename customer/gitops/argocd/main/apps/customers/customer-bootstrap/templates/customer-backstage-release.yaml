@@ -1,0 +1,138 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: {{ include "customer.backstageReleaseName" . }}
+  namespace: backstage
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ include "customer.agencyLabel" . | quote }}
+    euro.scale/customer: {{ include "customer.customerLabel" . | quote }}
+spec:
+  providerConfigRef:
+    name: helm-provider
+  rollbackLimit: 3
+  forProvider:
+    namespace: backstage
+    skipCreateNamespace: true
+    chart:
+      name: backstage
+      repository: https://backstage.github.io/charts
+      version: {{ .Values.backstage.chartVersion | quote }}
+    values:
+      fullnameOverride: {{ include "customer.backstageReleaseName" . }}
+      serviceAccount:
+        create: false
+        name: backstage
+      backstage:
+        image:
+          registry: {{ .Values.backstage.image.registry | quote }}
+          repository: {{ .Values.backstage.image.repository | quote }}
+          tag: {{ .Values.backstage.image.tag | quote }}
+          pullPolicy: {{ .Values.backstage.image.pullPolicy | quote }}
+        extraEnvVars:
+          - name: NODE_TLS_REJECT_UNAUTHORIZED
+            value: "0"
+          - name: BACKSTAGE_AGENCY_NAME
+            value: {{ include "customer.agencyLabel" . | quote }}
+        extraEnvVarsSecrets:
+          - backstage-secrets
+        extraContainers:
+          - name: keycloak-loopback-proxy
+            image: alpine/socat:1.8.0.0
+            args:
+              - TCP-LISTEN:30843,fork,reuseaddr,bind=127.0.0.1
+              - TCP:keycloak-nodeport.keycloak.svc.cluster.local:443
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 65534
+          - name: keycloak-loopback-proxy-443
+            image: alpine/socat:1.8.0.0
+            args:
+              - TCP-LISTEN:443,fork,reuseaddr,bind=127.0.0.1
+              - TCP:keycloak-nodeport.keycloak.svc.cluster.local:443
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+              runAsNonRoot: false
+              capabilities:
+                add:
+                  - NET_BIND_SERVICE
+        extraVolumes:
+          - name: customer-catalog
+            configMap:
+              name: {{ include "customer.catalogConfigMapName" . }}
+        extraVolumeMounts:
+          - name: customer-catalog
+            mountPath: /app/customer-catalog-info.yaml
+            subPath: catalog-info.yaml
+        appConfig:
+          app:
+            title: {{ printf "%s Customer Portal" .Values.customerName | quote }}
+            baseUrl: {{ printf "https://%s" (include "customer.host" .) | quote }}
+          organization:
+            name: Euroscale
+          backend:
+            baseUrl: {{ printf "https://%s" (include "customer.host" .) | quote }}
+            listen:
+              port: 7007
+              host: 0.0.0.0
+            cors:
+              origin: {{ printf "https://%s" (include "customer.host" .) | quote }}
+              methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+              credentials: true
+            csp:
+              connect-src: ["'self'", "http:", "https:"]
+            database:
+              client: better-sqlite3
+              connection: ":memory:"
+          auth:
+            environment: production
+            session:
+              secret: local-dev-backstage-session-secret-change-me
+            providers:
+              oauth2Proxy:
+                signIn:
+                  resolvers:
+                    - resolver: emailMatchingUserEntityProfileEmail
+          catalog:
+            rules:
+              - allow: [Component, API, Resource, ResourceDefinition, System, Domain, Location, User, Group, Template]
+            locations:
+              - type: file
+                target: /app/customer-catalog-info.yaml
+          kubernetes:
+            serviceLocatorMethod:
+              type: multiTenant
+            clusterLocatorMethods:
+              - type: config
+                clusters:
+                  - name: local-kind
+                    title: kind-euroscale
+                    url: https://kubernetes.default.svc
+                    authProvider: serviceAccount
+                    skipTLSVerify: true
+          argocd:
+            baseUrl: {{ .Values.argocd.baseUrl | quote }}
+            appLocatorMethods: []
+          openbaoRuntimeAuth:
+            mountPath: kubernetes
+            role: backstage
+            serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+            refreshSkewSeconds: 60
+            fallbackTokenTtlSeconds: 900
+          proxy:
+            endpoints:
+              "/argocd/api":
+                target: http://argocd-server.argocd.svc.cluster.local/api/v1
+                changeOrigin: true
+                headers:
+                  Authorization: ${ARGOCD_AUTH_HEADER}
+          permission:
+            enabled: true
+      service:
+        type: ClusterIP
+      ingress:
+        enabled: false

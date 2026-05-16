@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - agencies-project.yaml
+  - apps/base/crossplane/resources/xrd-agencystack.yaml
+  - apps/base/crossplane/resources/composition-agencystack.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd
+  app.euroscale.io/layer: agencies

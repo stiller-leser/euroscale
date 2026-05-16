@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: customer-{{ include "customer.id" . }}-status
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: customer-bootstrap
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ include "customer.agencyLabel" . | quote }}
+    euro.scale/customer: {{ include "customer.customerLabel" . | quote }}
+data:
+  agencyName: {{ include "customer.agencyLabel" . | quote }}
+  customerName: {{ include "customer.customerLabel" . | quote }}
+  workspacePath: {{ .Values.workspacePath | quote }}
+  clusterClass: {{ default "local-vcluster" .Values.clusterClass | quote }}
+  targetClusterName: {{ default "in-cluster" .Values.targetClusterName | quote }}
+  targetNamespace: {{ default "argocd" .Values.targetNamespace | quote }}
+  argocdApplication: {{ include "customer.argocdApplicationName" . | quote }}
+  customerBackstageUrl: {{ printf "https://%s" (include "customer.host" .) | quote }}
+  vclusterRelease: {{ include "customer.vclusterReleaseName" . | quote }}
+  crossplaneRelease: {{ include "customer.crossplaneReleaseName" . | quote }}
+  kubevirtEnabled: {{ ternary "true" "false" (default true .Values.addons.kubevirt.enabled) | quote }}
+  kubevirtRelease: {{ include "customer.kubevirtReleaseName" . | quote }}
+  kubeovnEnabled: {{ ternary "true" "false" (default true .Values.addons.kubeovn.enabled) | quote }}
+  kubeovnRelease: {{ include "customer.kubeovnReleaseName" . | quote }}
+  interconnectEnabled: {{ ternary "true" "false" (default false .Values.network.interconnect.enabled) | quote }}
+  interconnectMode: {{ default "submariner" .Values.network.interconnect.mode | quote }}
+  cableDriver: {{ default "wireguard" .Values.network.interconnect.cableDriver | quote }}
+  globalnet: {{ ternary "true" "false" (default false .Values.network.interconnect.globalnet) | quote }}
+  interconnectPrepared: {{ ternary "true" "false" (and (default false .Values.network.interconnect.enabled) (eq (default "submariner" .Values.network.interconnect.mode) "submariner")) | quote }}
+  interconnectAutoJoinEnabled: {{ ternary "true" "false" (default false .Values.network.interconnect.autoJoin.enabled) | quote }}
+  interconnectBrokerSecret: {{ printf "%s/%s" (include "customer.vclusterNamespace" .) (default "submariner-broker-info" .Values.network.interconnect.autoJoin.brokerInfoSecretRef.name) | quote }}
+  interconnectJoinHint: {{ printf "subctl join <broker-info.subm> --clusterid %s --cable-driver %s" (include "customer.id" .) (default "wireguard" .Values.network.interconnect.cableDriver) | quote }}
+  status: "managed-by-argocd"
+  source: "customer-xrd"

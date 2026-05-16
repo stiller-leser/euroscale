@@ -1,0 +1,179 @@
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: customerstacks.euro.scale
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    terasky.backstage.io/add-to-catalog: "true"
+    terasky.backstage.io/owner: group:default/agencies-admins
+    terasky.backstage.io/system: euroscale
+    backstage.euroscale.io/scope: agencies-xrd
+spec:
+  group: euro.scale
+  scope: Cluster
+
+  names:
+    kind: CustomerStack
+    plural: customerstacks
+
+
+  defaultCompositionRef:
+    name: customerstack-agency-vcluster
+
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: Customer environment specification scoped to an agency.
+              properties:
+                customerName:
+                  type: string
+                  description: Customer tenant identifier.
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  maxLength: 20
+                agencyName:
+                  type: string
+                  description: Agency that owns this customer environment.
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  maxLength: 20
+                members:
+                  type: array
+                  description: Customer member emails.
+                  items:
+                    type: string
+                    format: email
+                kcp:
+                  type: object
+                  properties:
+                    workspacePath:
+                      type: string
+                      description: Origin KCP workspace path where this claim is managed.
+                      default: root:agencies
+                cluster:
+                  type: object
+                  description: Workload cluster placement and provider-specific settings.
+                  properties:
+                    class:
+                      type: string
+                      enum:
+                        - local-vcluster
+                        - external
+                        - eks
+                        - gke
+                        - aks
+                        - gardener-shoot
+                      default: local-vcluster
+                    target:
+                      type: object
+                      properties:
+                        argocdClusterName:
+                          type: string
+                          default: in-cluster
+                        server:
+                          type: string
+                        namespace:
+                          type: string
+                          default: argocd
+                    provider:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    vcluster:
+                      type: object
+                      properties:
+                        chartVersion:
+                          type: string
+                        values:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                network:
+                  type: object
+                  description: Multi-cluster network intent (Kube-OVN/Submariner).
+                  properties:
+                    interconnect:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        mode:
+                          type: string
+                          enum:
+                            - submariner
+                          default: submariner
+                        cableDriver:
+                          type: string
+                          enum:
+                            - wireguard
+                            - libreswan
+                            - vxlan
+                          default: wireguard
+                        globalnet:
+                          type: boolean
+                          default: false
+                        autoJoin:
+                          type: object
+                          description: Optional automatic Submariner broker join settings.
+                          properties:
+                            enabled:
+                              type: boolean
+                              default: false
+                            brokerInfoSecretName:
+                              type: string
+                              default: submariner-broker-info
+                            brokerInfoSecretKey:
+                              type: string
+                              default: broker-info.subm
+                            clusterCIDR:
+                              type: string
+                            serviceCIDR:
+                              type: string
+              required:
+                - customerName
+                - agencyName
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                argocdApplication:
+                  type: string
+                argocdProject:
+                  type: string
+                clusterClass:
+                  type: string
+                targetCluster:
+                  type: string
+                workspacePath:
+                  type: string
+                vclusterRelease:
+                  type: string
+                crossplaneRelease:
+                  type: string
+                interconnectMode:
+                  type: string
+                cableDriver:
+                  type: string
+
+      additionalPrinterColumns:
+        - name: Agency
+          type: string
+          jsonPath: .spec.agencyName
+        - name: Customer
+          type: string
+          jsonPath: .spec.customerName
+        - name: Class
+          type: string
+          jsonPath: .spec.cluster.class
+        - name: Ready
+          type: string
+          jsonPath: .status.ready
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

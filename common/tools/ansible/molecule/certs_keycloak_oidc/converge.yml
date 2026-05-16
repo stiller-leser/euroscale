@@ -1,0 +1,17 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    certs_ensure_keycloak_oidc: true
+    certs_output_dir: /tmp/euroscale-certs/keycloak-oidc
+    keycloak_oidc_ca_key: "{{ certs_output_dir }}/oidc-ca.key"
+    keycloak_oidc_ca_csr: "{{ certs_output_dir }}/oidc-ca.csr"
+    keycloak_oidc_ca_crt: "{{ certs_output_dir }}/oidc-ca.crt"
+    keycloak_oidc_tls_key: "{{ certs_output_dir }}/oidc-tls.key"
+    keycloak_oidc_tls_csr: "{{ certs_output_dir }}/oidc-tls.csr"
+    keycloak_oidc_tls_crt: "{{ certs_output_dir }}/oidc-tls.crt"
+  tasks:
+    - name: Import certs_keycloak_oidc role
+      import_role:
+        name: certs_keycloak_oidc

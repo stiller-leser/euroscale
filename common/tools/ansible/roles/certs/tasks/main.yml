@@ -1,0 +1,77 @@
+---
+- name: Ensure Keycloak cert directory exists
+  ansible.builtin.file:
+    path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs"
+    state: directory
+    mode: "0755"
+  when: certs_target == "keycloak-oidc"
+
+- name: Check existing Keycloak OIDC root CA material
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt"
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key"
+  register: keycloak_ca_stats
+  when: certs_target == "keycloak-oidc"
+
+- name: Decide whether to generate Keycloak OIDC root CA
+  ansible.builtin.set_fact:
+    keycloak_generate_ca: >-
+      {{
+        (certs_force | default(false) | bool)
+        or
+        (keycloak_ca_stats.results | map(attribute='stat.exists') | list | min == false)
+        or
+        (keycloak_ca_stats.results | map(attribute='stat.size') | list | min == 0)
+      }}
+  when: certs_target == "keycloak-oidc"
+
+- name: Generate Keycloak OIDC root CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key"
+    type: RSA
+    size: 2048
+    mode: "0600"
+  when:
+    - certs_target == "keycloak-oidc"
+    - keycloak_generate_ca | bool
+
+- name: Build Keycloak OIDC root CA CSR
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key"
+    common_name: "Euroscale OIDC CA"
+    country_name: US
+    state_or_province_name: Local
+    locality_name: Local
+    organization_name: Euroscale
+    organizational_unit_name: ControlPlane
+    basic_constraints:
+      - "CA:TRUE"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+  register: keycloak_ca_csr
+  when:
+    - certs_target == "keycloak-oidc"
+    - keycloak_generate_ca | bool
+
+- name: Generate Keycloak OIDC self-signed root CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.crt"
+    csr_content: "{{ keycloak_ca_csr.csr }}"
+    privatekey_path: "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/certs/keycloak-oidc-ca.key"
+    provider: selfsigned
+    selfsigned_not_after: "+3650d"
+    mode: "0644"
+  when:
+    - certs_target == "keycloak-oidc"
+    - keycloak_generate_ca | bool
+
+- name: Ensure certs_target is recognized
+  ansible.builtin.assert:
+    that:
+      - certs_target == "keycloak-oidc"
+    fail_msg: "Unknown certs_target: {{ certs_target }}"

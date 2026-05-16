@@ -1,0 +1,64 @@
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  instances: 1
+  db:
+    vendor: postgres
+    host: keycloak-db-rw.cnpg.svc.cluster.local
+    database: keycloak
+    usernameSecret:
+      name: postgres-credentials
+      key: username
+    passwordSecret:
+      name: postgres-credentials
+      key: password
+  http:
+    httpEnabled: true
+    httpPort: 8080
+  proxy:
+    headers: xforwarded
+  hostname:
+    hostname: https://keycloak.internal.euroscale.local
+    backchannelDynamic: true
+    strict: false
+  bootstrapAdmin:
+    user:
+      secret: keycloak-admin-credentials
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  unsupported:
+    podTemplate:
+      spec:
+        volumes:
+          - name: spire-agent-socket
+            csi:
+              driver: csi.spiffe.io
+              readOnly: true
+        initContainers:
+        - name: wait-for-keycloak-db
+          image: busybox:1.36.1
+          command:
+          - /bin/sh
+          - -c
+          - |
+            echo "Waiting for keycloak-db-rw.cnpg.svc.cluster.local:5432..."
+            until nc -z -w 2 keycloak-db-rw.cnpg.svc.cluster.local 5432; do
+              sleep 2
+            done
+            echo "Keycloak DB is reachable."
+        containers:
+          - name: keycloak
+            volumeMounts:
+              - name: spire-agent-socket
+                mountPath: /run/spire/sockets
+                readOnly: true

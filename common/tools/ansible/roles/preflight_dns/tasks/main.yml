@@ -1,0 +1,27 @@
+---
+- name: Ensure service DNS source file exists
+  ansible.builtin.stat:
+    path: "{{ control_plane_root }}/gitops/config/service-dns.env"
+  register: service_dns_source
+
+- name: Fail when service DNS source file is missing
+  ansible.builtin.assert:
+    that:
+      - service_dns_source.stat.exists
+    fail_msg: "Missing source DNS config: {{ control_plane_root }}/gitops/config/service-dns.env"
+
+- name: Sync service DNS env files
+  ansible.builtin.copy:
+    src: "{{ control_plane_root }}/gitops/config/service-dns.env"
+    dest: "{{ item }}"
+    remote_src: true
+    mode: "0644"
+  loop:
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/infrastructure/istio/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/infrastructure/istio-gateway/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/infrastructure/cert-manager-resources/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/main/apps/infrastructure/oauth2-proxy/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/main/apps/infrastructure/oauth2-proxy-routing/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/main/apps/infrastructure/kcp-routing/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/infrastructure/keycloak-routing/service-dns.env"
+    - "{{ control_plane_root }}/gitops/argocd/bootstrap/apps/identity-management/keycloak-resources/service-dns.env"

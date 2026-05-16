@@ -1,0 +1,15 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    backstage_action: refresh
+    backstage_image: local/euroscale-backstage:latest
+  tasks:
+    - name: Import backstage role
+      import_role:
+        name: backstage
+
+    - name: Verify backstage role executed
+      ansible.builtin.debug:
+        msg: "backstage role executed"

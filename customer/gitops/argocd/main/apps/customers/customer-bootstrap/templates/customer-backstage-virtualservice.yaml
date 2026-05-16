@@ -1,0 +1,25 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: customer-{{ include "customer.id" . }}-backstage
+  namespace: oauth2-proxy
+  labels:
+    app.kubernetes.io/part-of: customers
+    euro.scale/agency: {{ include "customer.agencyLabel" . | quote }}
+    euro.scale/customer: {{ include "customer.customerLabel" . | quote }}
+spec:
+  hosts:
+    - {{ include "customer.host" . | quote }}
+  gateways:
+    - {{ printf "istio-system/%s" (include "customer.gatewayName" .) | quote }}
+  http:
+    - match:
+        - uri:
+            exact: /
+      redirect:
+        uri: {{ printf "/catalog/default/component/%s" (include "customer.argocdApplicationName" .) | quote }}
+    - route:
+        - destination:
+            host: {{ printf "%s.oauth2-proxy.svc.cluster.local" (include "customer.backstageOauthProxyName" .) | quote }}
+            port:
+              number: 80

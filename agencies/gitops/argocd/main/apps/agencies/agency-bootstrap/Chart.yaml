@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agency-bootstrap
+description: Minimal agency bootstrap chart used for Argo visibility per agency
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

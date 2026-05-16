@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kcp
+
+resources:
+  - virtual-service.yaml
+
+configMapGenerator:
+  - name: service-dns-kcp-routing
+    envs:
+      - service-dns.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: service-dns-kcp-routing
+      fieldPath: data.KCP_HOST
+    targets:
+      - select:
+          kind: VirtualService
+          name: kcp-internal
+        fieldPaths:
+          - spec.hosts.0
+          - spec.tls.0.match.0.sniHosts.0
+
+commonLabels:
+  app.kubernetes.io/part-of: euroscale
+  app.kubernetes.io/managed-by: argocd

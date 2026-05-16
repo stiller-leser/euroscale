@@ -1,0 +1,46 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: {{ cluster_name }}
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            oidc-issuer-url: https://keycloak.internal.euroscale.local/realms/euroscale
+            oidc-client-id: kubernetes
+            oidc-username-claim: preferred_username
+            oidc-groups-claim: roles
+            oidc-username-prefix: "oidc:"
+            oidc-groups-prefix: "oidc:"
+            oidc-ca-file: /etc/kubernetes/oidc/keycloak-oidc-ca.crt
+          extraVolumes:
+            - name: keycloak-oidc-ca
+              hostPath: {{ kind_oidc_ca_container_path }}
+              mountPath: /etc/kubernetes/oidc/keycloak-oidc-ca.crt
+              pathType: File
+              readOnly: true
+    extraMounts:
+      - hostPath: {{ euroscale_root_path }}
+        containerPath: /workspace/euroscale
+        readOnly: true
+    extraPortMappings:
+      - containerPort: 30843
+        hostPort: 30843
+        protocol: TCP
+  - role: worker
+    extraMounts:
+      - hostPath: {{ euroscale_root_path }}
+        containerPath: /workspace/euroscale
+        readOnly: true
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 30880
+        hostPort: 443
+        protocol: TCP
+networking:
+  podSubnet: "10.0.0.0/15"
+  serviceSubnet: "10.2.0.0/16"

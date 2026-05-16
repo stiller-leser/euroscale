@@ -1,0 +1,84 @@
+---
+- name: Wait for Keycloak admin secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_SECRET') | default('keycloak-admin-credentials', true) }}"
+  register: keycloak_admin_secret_info
+  retries: 360
+  delay: 5
+  until: (keycloak_admin_secret_info.resources | length) > 0
+  when: keycloak_action == "enforce_password_reset"
+
+- name: Wait for Keycloak pod Ready
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+      - wait
+      - --for=condition=Ready
+      - "pod/{{ lookup('ansible.builtin.env', 'KEYCLOAK_POD_NAME') | default('keycloak-0', true) }}"
+      - --timeout=5s
+  register: keycloak_wait_cmd
+  retries: 360
+  delay: 5
+  until: keycloak_wait_cmd.rc == 0
+  changed_when: false
+  failed_when: false
+  when: keycloak_action == "enforce_password_reset"
+
+- name: Set Keycloak admin credentials facts
+  ansible.builtin.set_fact:
+    keycloak_admin_user: "{{ keycloak_admin_secret_info.resources[0].data.username | b64decode }}"
+    keycloak_admin_pass: "{{ keycloak_admin_secret_info.resources[0].data.password | b64decode }}"
+  no_log: true
+  when: keycloak_action == "enforce_password_reset"
+
+- name: Enforce Keycloak admin password reset
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n {{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }} exec {{ lookup('ansible.builtin.env', 'KEYCLOAK_POD_NAME') | default('keycloak-0', true) }} -- \
+        env KEYCLOAK_ADMIN_USER={{ keycloak_admin_user | quote }} KEYCLOAK_ADMIN_PASS={{ keycloak_admin_pass | quote }} \
+        sh -lc '
+          set -euo pipefail
+          KCADM=/opt/keycloak/bin/kcadm.sh
+          [ -x "${KCADM}" ] || KCADM=kcadm.sh
+          command -v "${KCADM}" >/dev/null 2>&1
+          "${KCADM}" config credentials --server http://127.0.0.1:8080 --realm master --user "${KEYCLOAK_ADMIN_USER}" --password "${KEYCLOAK_ADMIN_PASS}" >/dev/null
+          ADMIN_ID=$("${KCADM}" get users -r master -q username=admin --fields id --format csv --noquotes | head -n1)
+          [ -n "${ADMIN_ID}" ]
+          "${KCADM}" update "users/${ADMIN_ID}" -r master -s "requiredActions=[\"UPDATE_PASSWORD\"]" >/dev/null
+          "${KCADM}" get "users/${ADMIN_ID}" -r master --fields username,requiredActions --format json
+        '
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  register: keycloak_enforce_reset_cmd
+  retries: 12
+  delay: 5
+  until: keycloak_enforce_reset_cmd.rc == 0
+  changed_when: keycloak_enforce_reset_cmd.rc == 0
+  failed_when: false
+  no_log: true
+  when: keycloak_action == "enforce_password_reset"
+
+- name: Persist Keycloak admin required-actions snapshot
+  ansible.builtin.copy:
+    dest: /tmp/keycloak-admin-required-actions.json
+    content: "{{ keycloak_enforce_reset_cmd.stdout | default('') }}"
+    mode: "0600"
+  when:
+    - keycloak_action == "enforce_password_reset"
+    - keycloak_enforce_reset_cmd.rc | default(1) == 0
+    - keycloak_enforce_reset_cmd.stdout | default('') | trim | length > 0
+
+- name: Warn if Keycloak admin password reset enforcement did not complete
+  ansible.builtin.debug:
+    msg: >-
+      Could not enforce UPDATE_PASSWORD for Keycloak admin automatically right now.
+      Continuing apply. Re-run later when Keycloak is fully ready.
+  when:
+    - keycloak_action == "enforce_password_reset"
+    - keycloak_enforce_reset_cmd.rc | default(1) != 0

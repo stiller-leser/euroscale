@@ -1,0 +1,672 @@
+---
+- name: Load centralized authz model from repository
+  ansible.builtin.set_fact:
+    authz_model: "{{ lookup('ansible.builtin.file', authz_root ~ '/model.json') | from_json }}"
+  no_log: true
+
+- name: Check whether OPA CLI is available
+  ansible.builtin.command:
+    argv:
+      - opa
+      - version
+  register: authz_opa_version
+  changed_when: false
+  failed_when: false
+
+- name: Set OPA availability flag
+  ansible.builtin.set_fact:
+    authz_opa_available: "{{ authz_opa_version.rc | default(1) == 0 }}"
+  changed_when: false
+
+- name: Enforce OPA presence when strict mode is enabled
+  ansible.builtin.assert:
+    that:
+      - authz_opa_available | bool
+    fail_msg: >-
+      OPA CLI is required but not available in PATH.
+      Run ./scripts/setup.sh (it installs OPA) or install OPA manually and ensure it's on PATH.
+  when: authz_tests_require_opa | default(false) | bool
+
+- name: Note OPA validation skip when CLI is unavailable
+  ansible.builtin.debug:
+    msg: >-
+      OPA CLI not found in PATH; skipping Rego allow/errors query.
+      Continuing with live ArgoCD/Keycloak/OpenBao/oauth2-proxy/Backstage authz checks.
+  when: not authz_opa_available
+
+- name: Default OPA allow decision when CLI is unavailable
+  ansible.builtin.set_fact:
+    authz_opa_allow: true
+  changed_when: false
+  when: not authz_opa_available
+
+- name: Validate centralized authz model with OPA (allow query)
+  ansible.builtin.command:
+    argv:
+      - opa
+      - eval
+      - -f
+      - json
+      - -d
+      - "{{ authz_root }}/model.json"
+      - -d
+      - "{{ authz_root }}/rego/validate.rego"
+      - data.euroscale.authz.validate.allow
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: authz_opa_allow_eval
+  changed_when: false
+  when: authz_opa_available
+
+- name: Parse OPA allow query payload
+  ansible.builtin.set_fact:
+    authz_opa_allow_payload: "{{ authz_opa_allow_eval.stdout | from_json }}"
+  changed_when: false
+  when: authz_opa_available
+
+- name: Resolve OPA allow decision
+  ansible.builtin.set_fact:
+    authz_opa_allow: >-
+      {{
+        (
+          authz_opa_allow_payload.result[0].expressions[0].value
+          if (
+            authz_opa_allow_payload.result is defined and
+            (authz_opa_allow_payload.result | length) > 0 and
+            authz_opa_allow_payload.result[0].expressions is defined and
+            (authz_opa_allow_payload.result[0].expressions | length) > 0 and
+            authz_opa_allow_payload.result[0].expressions[0].value is defined
+          )
+          else false
+        ) | bool
+      }}
+  changed_when: false
+  when: authz_opa_available
+
+- name: Fetch OPA validation errors when allow=false
+  ansible.builtin.command:
+    argv:
+      - opa
+      - eval
+      - -f
+      - json
+      - -d
+      - "{{ authz_root }}/model.json"
+      - -d
+      - "{{ authz_root }}/rego/validate.rego"
+      - data.euroscale.authz.validate.errors
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: authz_opa_errors_eval
+  changed_when: false
+  when:
+    - authz_opa_available
+    - not authz_opa_allow
+
+- name: Parse OPA validation errors
+  ansible.builtin.set_fact:
+    authz_opa_errors_payload: "{{ authz_opa_errors_eval.stdout | from_json }}"
+  when:
+    - authz_opa_available
+    - not authz_opa_allow
+
+- name: Resolve OPA validation errors list
+  ansible.builtin.set_fact:
+    authz_opa_errors: >-
+      {{
+        (
+          authz_opa_errors_payload.result[0].expressions[0].value
+          if (
+            authz_opa_errors_payload.result is defined and
+            (authz_opa_errors_payload.result | length) > 0 and
+            authz_opa_errors_payload.result[0].expressions is defined and
+            (authz_opa_errors_payload.result[0].expressions | length) > 0 and
+            authz_opa_errors_payload.result[0].expressions[0].value is defined
+          )
+          else []
+        )
+      }}
+  when:
+    - authz_opa_available
+    - not authz_opa_allow
+
+- name: Ensure OPA authz validation passed
+  ansible.builtin.fail:
+    msg: >-
+      OPA authz validation failed:
+      {{ (authz_opa_errors | default(['unknown validation error'])) | join('; ') }}
+  when:
+    - authz_opa_available
+    - not authz_opa_allow
+
+- name: Read live ArgoCD RBAC ConfigMap
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: argocd
+    name: argocd-rbac-cm
+  register: authz_argocd_rbac_cm
+  changed_when: false
+
+- name: Ensure ArgoCD RBAC ConfigMap exists
+  ansible.builtin.assert:
+    that:
+      - authz_argocd_rbac_cm.resources | length > 0
+      - (authz_argocd_rbac_cm.resources[0].data['policy.csv'] | default('') | trim | length) > 0
+    fail_msg: "argocd/argocd-rbac-cm with policy.csv must exist before authz checks."
+
+- name: Capture live ArgoCD policy.csv raw content
+  ansible.builtin.set_fact:
+    authz_argocd_policy_csv_live_raw: "{{ authz_argocd_rbac_cm.resources[0].data['policy.csv'] | default('') }}"
+  changed_when: false
+
+- name: Normalize live ArgoCD policy lines
+  ansible.builtin.set_fact:
+    authz_argocd_policy_lines_live: >-
+      {{
+        (
+          authz_argocd_policy_csv_live_raw
+          | regex_replace('\r', '')
+          | regex_replace('\\\\n', '\n')
+          | regex_findall('[^\n]+')
+          | map('trim')
+          | map('regex_replace', '\\s*,\\s*', ', ')
+          | reject('equalto', '')
+          | list
+          | unique
+          | sort
+        ) | to_json | from_json
+      }}
+    authz_argocd_policy_lines_expected: >-
+      {{
+        (
+          authz_model.argocd.policyCsvLines
+          | default([])
+          | map('regex_replace', '\r', '')
+          | map('trim')
+          | map('regex_replace', '\\s*,\\s*', ', ')
+          | reject('equalto', '')
+          | list
+          | unique
+          | sort
+        ) | to_json | from_json
+      }}
+  changed_when: false
+
+- name: Ensure live ArgoCD RBAC contains all expected policy lines
+  ansible.builtin.assert:
+    that:
+      - authz_argocd_policy_lines_expected | difference(authz_argocd_policy_lines_live) | length == 0
+    fail_msg: >-
+      ArgoCD RBAC is missing expected lines:
+      {{ authz_argocd_policy_lines_expected | difference(authz_argocd_policy_lines_live) }}.
+      live_count={{ authz_argocd_policy_lines_live | length }},
+      expected_count={{ authz_argocd_policy_lines_expected | length }},
+      live_sample={{ (authz_argocd_policy_lines_live | list)[:5] }}
+
+- name: Define forbidden ArgoCD principals for identity users
+  ansible.builtin.set_fact:
+    authz_argocd_forbidden_principals:
+      - kube-admin
+      - /kube-admin
+      - kube-admins
+      - /kube-admins
+      - kcp-user
+      - /kcp-user
+      - kcp-users
+      - /kcp-users
+      - openbao-admin
+  changed_when: false
+
+- name: Ensure forbidden principals are not present in live ArgoCD RBAC
+  ansible.builtin.assert:
+    that:
+      - (authz_argocd_policy_lines_live | select('search', ', ' ~ (item | regex_escape) ~ ',') | list | length) == 0
+    fail_msg: "ArgoCD RBAC must not grant principal/role '{{ item }}'."
+  loop: "{{ authz_argocd_forbidden_principals }}"
+
+- name: Read live ArgoCD projects
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: AppProject
+    namespace: argocd
+  register: authz_argocd_projects
+  changed_when: false
+
+- name: Build expected and live ArgoCD project lists
+  ansible.builtin.set_fact:
+    authz_expected_argocd_projects: "{{ authz_model.backstage.argocdCatalogComponents | map(attribute='project') | list | unique }}"
+    authz_live_argocd_project_names: "{{ authz_argocd_projects.resources | map(attribute='metadata.name') | list }}"
+  changed_when: false
+
+- name: Ensure expected ArgoCD projects exist live
+  ansible.builtin.assert:
+    that:
+      - item in authz_live_argocd_project_names
+    fail_msg: "ArgoCD AppProject '{{ item }}' is missing."
+  loop: "{{ authz_expected_argocd_projects }}"
+
+- name: Read backstage oauth2-proxy deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: oauth2-proxy
+    name: backstage-oauth2-proxy
+  register: authz_backstage_oauth2_proxy
+  changed_when: false
+
+- name: Read openbao oauth2-proxy deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: oauth2-proxy
+    name: openbao-oauth2-proxy
+  register: authz_openbao_oauth2_proxy
+  changed_when: false
+
+- name: Ensure oauth2-proxy deployments exist
+  ansible.builtin.assert:
+    that:
+      - authz_backstage_oauth2_proxy.resources | length > 0
+      - authz_openbao_oauth2_proxy.resources | length > 0
+    fail_msg: "Expected oauth2-proxy deployments are missing."
+
+- name: Resolve allowed roles from live oauth2-proxy args
+  ansible.builtin.set_fact:
+    authz_backstage_allowed_roles_live: >-
+      {{
+        (
+          (
+            (
+              authz_backstage_oauth2_proxy.resources[0].spec.template.spec.containers[0].args
+              | default([])
+              | select('match', '^--allowed-role=')
+              | list
+              | first
+              | default('--allowed-role=')
+            )
+            | regex_replace('^--allowed-role=', '')
+            | split(',')
+            | map('trim')
+            | reject('equalto', '')
+            | list
+          ) | sort
+        ) | to_json | from_json
+      }}
+    authz_openbao_allowed_roles_live: >-
+      {{
+        (
+          (
+            (
+              authz_openbao_oauth2_proxy.resources[0].spec.template.spec.containers[0].args
+              | default([])
+              | select('match', '^--allowed-role=')
+              | list
+              | first
+              | default('--allowed-role=')
+            )
+            | regex_replace('^--allowed-role=', '')
+            | split(',')
+            | map('trim')
+            | reject('equalto', '')
+            | list
+          ) | sort
+        ) | to_json | from_json
+      }}
+    authz_backstage_allowed_roles_expected: "{{ ((authz_model.oauth2Proxy.backstageAllowedRoles | default([])) | sort) | to_json | from_json }}"
+    authz_openbao_allowed_roles_expected: "{{ ((authz_model.oauth2Proxy.openbaoAllowedRoles | default([])) | sort) | to_json | from_json }}"
+  changed_when: false
+
+- name: Ensure oauth2-proxy allowed roles match authz model
+  ansible.builtin.assert:
+    that:
+      - authz_backstage_allowed_roles_live == authz_backstage_allowed_roles_expected
+      - authz_openbao_allowed_roles_live == authz_openbao_allowed_roles_expected
+    fail_msg: >-
+      oauth2-proxy allowed-role mismatch.
+      backstage live={{ authz_backstage_allowed_roles_live }} expected={{ authz_backstage_allowed_roles_expected }};
+      openbao live={{ authz_openbao_allowed_roles_live }} expected={{ authz_openbao_allowed_roles_expected }}.
+
+- name: Read Keycloak admin credentials secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    name: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_SECRET') | default('keycloak-admin-credentials', true) }}"
+  register: authz_keycloak_admin_secret
+  changed_when: false
+
+- name: Ensure Keycloak admin credentials secret exists
+  ansible.builtin.assert:
+    that:
+      - authz_keycloak_admin_secret.resources | length > 0
+      - authz_keycloak_admin_secret.resources[0].data.username is defined
+      - authz_keycloak_admin_secret.resources[0].data.password is defined
+    fail_msg: "Keycloak admin secret is missing required fields."
+
+- name: Read live Keycloak server pod
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}"
+    label_selectors:
+      - app=keycloak
+  register: authz_keycloak_pods
+  changed_when: false
+
+- name: Ensure live Keycloak pod exists
+  ansible.builtin.assert:
+    that:
+      - authz_keycloak_pods.resources | length > 0
+    fail_msg: "No running Keycloak pod found for authz verification."
+
+- name: Prepare Keycloak authz verification inputs
+  ansible.builtin.set_fact:
+    authz_keycloak_pod_name: "{{ authz_keycloak_pods.resources[0].metadata.name }}"
+    authz_keycloak_admin_user: "{{ authz_keycloak_admin_secret.resources[0].data.username | b64decode }}"
+    authz_keycloak_admin_pass: "{{ authz_keycloak_admin_secret.resources[0].data.password | b64decode }}"
+    authz_keycloak_expected_users_b64: "{{ (authz_model.keycloak.users | map(attribute='username') | list | unique | join('\n')) | b64encode }}"
+    authz_keycloak_expected_groups_b64: "{{ (authz_model.keycloak.groups | map(attribute='name') | list | unique | join('\n')) | b64encode }}"
+    authz_keycloak_expected_roles_b64: "{{ (authz_model.keycloak.realmRoles | map(attribute='name') | list | unique | join('\n')) | b64encode }}"
+  no_log: true
+
+- name: Verify Keycloak users/groups/roles and kcp-user isolation
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n "{{ lookup('ansible.builtin.env', 'KEYCLOAK_NAMESPACE') | default('keycloak', true) }}" exec "{{ authz_keycloak_pod_name }}" -- \
+      env KEYCLOAK_ADMIN_USER="{{ authz_keycloak_admin_user }}" \
+      KEYCLOAK_ADMIN_PASS="{{ authz_keycloak_admin_pass }}" \
+      KEYCLOAK_REALM="{{ lookup('ansible.builtin.env', 'KEYCLOAK_REALM') | default('euroscale', true) }}" \
+      EXPECTED_USERS_B64="{{ authz_keycloak_expected_users_b64 }}" \
+      EXPECTED_GROUPS_B64="{{ authz_keycloak_expected_groups_b64 }}" \
+      EXPECTED_ROLES_B64="{{ authz_keycloak_expected_roles_b64 }}" \
+      sh -lc '
+      set -euo pipefail
+      KCADM=/opt/keycloak/bin/kcadm.sh
+      [ -x "${KCADM}" ] || KCADM=kcadm.sh
+      command -v "${KCADM}" >/dev/null 2>&1
+
+      realm="${KEYCLOAK_REALM}"
+      "${KCADM}" config credentials --server http://127.0.0.1:8080 --realm master --user "${KEYCLOAK_ADMIN_USER}" --password "${KEYCLOAK_ADMIN_PASS}" >/dev/null
+
+      users_json="$("${KCADM}" get users -r "${realm}" --fields username)"
+      groups_json="$("${KCADM}" get groups -r "${realm}" --fields name)"
+      roles_json="$("${KCADM}" get roles -r "${realm}" --fields name)"
+
+      for username in $(printf "%s" "${EXPECTED_USERS_B64}" | base64 -d); do
+        [ -z "${username}" ] && continue
+        printf "%s" "${users_json}" | grep -q "\"username\"[[:space:]]*:[[:space:]]*\"${username}\"" || { echo "missing-user:${username}" >&2; exit 1; }
+      done
+
+      for group_name in $(printf "%s" "${EXPECTED_GROUPS_B64}" | base64 -d); do
+        [ -z "${group_name}" ] && continue
+        printf "%s" "${groups_json}" | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${group_name}\"" || { echo "missing-group:${group_name}" >&2; exit 1; }
+      done
+
+      for role_name in $(printf "%s" "${EXPECTED_ROLES_B64}" | base64 -d); do
+        [ -z "${role_name}" ] && continue
+        printf "%s" "${roles_json}" | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${role_name}\"" || { echo "missing-role:${role_name}" >&2; exit 1; }
+      done
+
+      kcp_user_id="$("${KCADM}" get users -r "${realm}" -q username=kcp-user --fields id --format csv --noquotes | head -n1 | tr -d "\r")"
+      [ -n "${kcp_user_id}" ] || { echo "missing-user:kcp-user" >&2; exit 1; }
+
+      kcp_roles_json="$("${KCADM}" get "users/${kcp_user_id}/role-mappings/realm" -r "${realm}" --fields name)"
+      printf "%s" "${kcp_roles_json}" | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"kcp-user\"" || { echo "kcp-user-missing-role:kcp-user" >&2; exit 1; }
+      if printf "%s" "${kcp_roles_json}" | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"kube-admin\""; then
+        echo "kcp-user-forbidden-role:kube-admin" >&2
+        exit 1
+      fi
+
+      kcp_groups_json="$("${KCADM}" get "users/${kcp_user_id}/groups" -r "${realm}" --fields name)"
+      printf "%s" "${kcp_groups_json}" | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"kcp-user\"" || { echo "kcp-user-missing-group:kcp-user" >&2; exit 1; }
+      if printf "%s" "${kcp_groups_json}" | grep -q "\"name\"[[:space:]]*:[[:space:]]*\"kube-admin\""; then
+        echo "kcp-user-forbidden-group:kube-admin" >&2
+        exit 1
+      fi
+      '
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  register: authz_keycloak_verification
+  changed_when: false
+  no_log: true
+
+- name: Resolve OpenBao root token source for authz verification
+  block:
+    - name: Read OpenBao init log
+      ansible.builtin.slurp:
+        src: "{{ control_plane_root }}/scripts/openbao-init.log"
+      register: authz_openbao_init_log_raw
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Set OpenBao root token for authz checks
+      ansible.builtin.set_fact:
+        authz_openbao_root_token: >-
+          {{
+            (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim)
+            if (lookup('ansible.builtin.env', 'OPENBAO_ROOT_TOKEN') | trim | length > 0)
+            else (
+              (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim)
+              if (lookup('ansible.builtin.env', 'VAULT_TOKEN') | trim | length > 0)
+              else (
+                ((authz_openbao_init_log_raw.content | b64decode | from_json).root_token | default('') | trim)
+                if (authz_openbao_init_log_raw is defined and (authz_openbao_init_log_raw.content | default('') | length > 0))
+                else ''
+              )
+            )
+          }}
+      no_log: true
+
+    - name: Ensure OpenBao root token is available for authz checks
+      ansible.builtin.assert:
+        that:
+          - authz_openbao_root_token | default('') | length > 0
+        fail_msg: "OpenBao root token missing (OPENBAO_ROOT_TOKEN/VAULT_TOKEN or scripts/openbao-init.log required)."
+
+- name: Read OpenBao pod for authz verification
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: openbao
+    label_selectors:
+      - app.kubernetes.io/name=openbao
+  register: authz_openbao_pods
+  changed_when: false
+
+- name: Ensure OpenBao pod exists for authz verification
+  ansible.builtin.assert:
+    that:
+      - authz_openbao_pods.resources | length > 0
+    fail_msg: "No OpenBao pod found for authz verification."
+
+- name: Set OpenBao pod name for authz checks
+  ansible.builtin.set_fact:
+    authz_openbao_pod_name: "{{ authz_openbao_pods.resources[0].metadata.name }}"
+  no_log: true
+
+- name: Read live OpenBao OIDC role bindings
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl -n openbao exec "{{ authz_openbao_pod_name }}" -- \
+      env VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}" \
+      VAULT_TOKEN="{{ authz_openbao_root_token }}" \
+      bao read -format=json "auth/oidc/role/{{ item.name }}"
+  args:
+    executable: /bin/bash
+    chdir: "{{ control_plane_root }}"
+  register: authz_openbao_role_reads
+  changed_when: false
+  no_log: true
+  loop: "{{ authz_model.openbao.oidcRoleBindings | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Verify live OpenBao OIDC role bindings match authz model
+  ansible.builtin.assert:
+    that:
+      - authz_openbao_expected_bound_roles | difference(authz_openbao_live_bound_roles) | length == 0
+      - authz_openbao_expected_token_policies | difference(authz_openbao_live_token_policies) | length == 0
+    fail_msg: >-
+      OpenBao OIDC role '{{ role_read_item.item.name }}' mismatch.
+      expected bound_roles={{ authz_openbao_expected_bound_roles }}, live bound_roles={{ authz_openbao_live_bound_roles }};
+      expected token_policies={{ authz_openbao_expected_token_policies }}, live token_policies={{ authz_openbao_live_token_policies }}.
+  loop: "{{ authz_openbao_role_reads.results }}"
+  loop_control:
+    loop_var: role_read_item
+    label: "{{ role_read_item.item.name }}"
+  vars:
+    authz_openbao_role_doc: "{{ role_read_item.stdout | from_json }}"
+    authz_openbao_expected_bound_roles: "{{ (role_read_item.item.boundRoles | default([])) | to_json | from_json }}"
+    authz_openbao_expected_token_policies: "{{ ((role_read_item.item.tokenPolicies | default('') | split(',')) | map('trim') | reject('equalto', '') | list) | to_json | from_json }}"
+    authz_openbao_live_bound_roles: >-
+      {{
+        (
+          authz_openbao_role_doc.data.bound_claims.roles
+          if (
+            authz_openbao_role_doc.data is mapping and
+            authz_openbao_role_doc.data.bound_claims is mapping and
+            authz_openbao_role_doc.data.bound_claims.roles is defined and
+            authz_openbao_role_doc.data.bound_claims.roles is sequence and
+            authz_openbao_role_doc.data.bound_claims.roles is not string
+          )
+          else (
+            [authz_openbao_role_doc.data.bound_claims.roles]
+            if (
+              authz_openbao_role_doc.data is mapping and
+              authz_openbao_role_doc.data.bound_claims is mapping and
+              authz_openbao_role_doc.data.bound_claims.roles is defined and
+              authz_openbao_role_doc.data.bound_claims.roles is string
+            )
+            else []
+          )
+        ) | map('trim') | reject('equalto', '') | list | to_json | from_json
+      }}
+    authz_openbao_live_token_policies: >-
+      {{
+        (
+          authz_openbao_role_doc.data.token_policies
+          if (
+            authz_openbao_role_doc.data is mapping and
+            authz_openbao_role_doc.data.token_policies is defined and
+            authz_openbao_role_doc.data.token_policies is sequence and
+            authz_openbao_role_doc.data.token_policies is not string
+          )
+          else (
+            authz_openbao_role_doc.data.token_policies.split(',')
+            if (
+              authz_openbao_role_doc.data is mapping and
+              authz_openbao_role_doc.data.token_policies is defined and
+              authz_openbao_role_doc.data.token_policies is string
+            )
+            else []
+          )
+        ) | map('trim') | reject('equalto', '') | list | to_json | from_json
+      }}
+
+- name: Read running Backstage catalog file
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - backstage
+      - exec
+      - deployment/backstage
+      - -c
+      - backstage-backend
+      - --
+      - cat
+      - /app/catalog-info.yaml
+  args:
+    chdir: "{{ control_plane_root }}"
+  register: authz_backstage_catalog_raw
+  changed_when: false
+
+- name: Parse running Backstage catalog documents
+  ansible.builtin.set_fact:
+    authz_backstage_catalog_docs: >-
+      {{
+        (
+          (authz_backstage_catalog_raw.stdout | from_yaml_all | list)
+          | reject('equalto', none)
+          | list
+        ) | to_json | from_json
+      }}
+    authz_backstage_component_map: {}
+    authz_backstage_group_map: {}
+  changed_when: false
+
+- name: Index Backstage catalog components by name
+  ansible.builtin.set_fact:
+    authz_backstage_component_map: "{{ authz_backstage_component_map | combine({ item.metadata.name: item }) }}"
+  loop: "{{ authz_backstage_catalog_docs }}"
+  when:
+    - item is mapping
+    - (item.kind | default('')) == 'Component'
+    - item.metadata is defined
+    - item.metadata.name is defined
+
+- name: Index Backstage catalog groups by name
+  ansible.builtin.set_fact:
+    authz_backstage_group_map: "{{ authz_backstage_group_map | combine({ item.metadata.name: item }) }}"
+  loop: "{{ authz_backstage_catalog_docs }}"
+  when:
+    - item is mapping
+    - (item.kind | default('')) == 'Group'
+    - item.metadata is defined
+    - item.metadata.name is defined
+
+- name: Ensure expected Backstage ArgoCD components exist in catalog
+  ansible.builtin.assert:
+    that:
+      - item.name in authz_backstage_component_map
+    fail_msg: "Backstage catalog is missing expected component '{{ item.name }}'."
+  loop: "{{ authz_model.backstage.argocdCatalogComponents | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ensure Backstage ArgoCD component metadata matches authz model
+  ansible.builtin.assert:
+    that:
+      - (authz_backstage_component_map[item.name].metadata.annotations['argocd/project-name'] | default('')) == item.project
+      - (authz_backstage_component_map[item.name].spec.owner | default('')) == item.owner
+      - ((authz_backstage_component_map[item.name].metadata.annotations['backstage.euroscale.io/scope-argocd'] | default('false')) == 'true') if (item.scopeArgocd | default(false)) else true
+      - ((authz_backstage_component_map[item.name].metadata.annotations['backstage.euroscale.io/scope-agencies-argocd'] | default('false')) == 'true') if (item.scopeAgenciesArgocd | default(false)) else true
+    fail_msg: "Backstage catalog component '{{ item.name }}' does not match authz model metadata."
+  when: item.name in authz_backstage_component_map
+  loop: "{{ authz_model.backstage.argocdCatalogComponents | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ensure Backstage component owner group entities exist in catalog
+  ansible.builtin.assert:
+    that:
+      - authz_backstage_owner_group_name in authz_backstage_group_map
+    fail_msg: "Backstage catalog missing owner group '{{ authz_backstage_owner_group_name }}' for component '{{ item.name }}'."
+  loop: "{{ authz_model.backstage.argocdCatalogComponents | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    authz_backstage_owner_group_name: "{{ item.owner | regex_replace('^group:default/', '') }}"
+
+- name: Ensure agencies-scoped Backstage owner groups carry agencies-argocd scope
+  ansible.builtin.assert:
+    that:
+      - (authz_backstage_group_map[authz_backstage_owner_group_name].metadata.annotations['backstage.euroscale.io/scope-agencies-argocd'] | default('false')) == 'true'
+    fail_msg: >-
+      Backstage group '{{ authz_backstage_owner_group_name }}' must carry
+      backstage.euroscale.io/scope-agencies-argocd=true for component '{{ item.name }}'.
+  when:
+    - item.scopeAgenciesArgocd | default(false)
+    - authz_backstage_owner_group_name in authz_backstage_group_map
+  loop: "{{ authz_model.backstage.argocdCatalogComponents | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    authz_backstage_owner_group_name: "{{ item.owner | regex_replace('^group:default/', '') }}"
+
+- name: Report authz verification success
+  ansible.builtin.debug:
+    msg: "Authz/access verification checks passed."

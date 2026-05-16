@@ -1,0 +1,10 @@
+---
+- name: Converge
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    keycloak_action: enforce_password_reset
+  tasks:
+    - name: Import keycloak role
+      import_role:
+        name: keycloak

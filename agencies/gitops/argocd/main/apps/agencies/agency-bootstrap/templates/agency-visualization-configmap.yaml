@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agency-{{ required "agencyName is required" .Values.agencyName }}-status
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: agency-bootstrap
+    app.kubernetes.io/part-of: agencies
+    euro.scale/agency: {{ .Values.agencyName | quote }}
+data:
+  agencyName: {{ .Values.agencyName | quote }}
+  clusterClass: {{ default "local-vcluster" .Values.clusterClass | quote }}
+  targetClusterName: {{ default "in-cluster" .Values.targetClusterName | quote }}
+  argocdProject: {{ default .Values.agencyName .Values.argocd.projectName | quote }}
+  agencyBackstageUrl: {{ printf "https://%s.agencies.euroscale.local" .Values.agencyName | quote }}
+  keycloakRealm: {{ printf "%s-%s" (default "agency" .Values.keycloak.realmPrefix) .Values.agencyName | quote }}
+  providerType: {{ default "generic" .Values.provider.type | quote }}
+  status: "managed-by-argocd"
+  source: "agencies-xrd"

@@ -1,0 +1,34 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests/approval"]
+    verbs: ["update"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["signers"]
+    resourceNames: ["kubernetes.io/kubelet-serving"]
+    verbs: ["approve"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server
+subjects:
+  - kind: ServiceAccount
+    name: spire-server
+    namespace: spire-system

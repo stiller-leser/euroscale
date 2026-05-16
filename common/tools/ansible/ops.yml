@@ -1,0 +1,47 @@
+---
+- name: Ensure local Docker registry is configured
+  hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: auto_silent
+  roles:
+    - role: kind_registry
+      tags: [kind_registry, always]
+
+- name: Retrieve cluster credentials
+  hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: auto_silent
+  roles:
+    - role: credentials
+      tags: [credentials, always]
+
+- name: Bootstrap OpenBao with initial secrets
+  hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: auto_silent
+  roles:
+    - role: openbao_bootstrap
+      tags: [openbao_bootstrap, openbao]
+
+- name: Enforce Keycloak admin password reset
+  hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: auto_silent
+  roles:
+    - role: keycloak_password_reset
+      tags: [keycloak, password_reset]
+
+- name: Generate and apply certificates
+  hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: auto_silent
+  roles:
+    - role: certs_keycloak_oidc
+      tags: [certs, keycloak_oidc]
+    - role: certs_internal_gateway
+      tags: [certs, internal_gateway]

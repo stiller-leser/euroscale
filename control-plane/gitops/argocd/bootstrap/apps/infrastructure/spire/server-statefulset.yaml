@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  namespace: spire-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spire-server
+  serviceName: spire-server
+  template:
+    metadata:
+      labels:
+        app: spire-server
+    spec:
+      serviceAccountName: spire-server
+      initContainers:
+        - name: wait-for-spire-db
+          image: busybox:1.36.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -zv spire-db-rw.spire-system.svc 5432 2>/dev/null; do
+                echo "Waiting for spire-db..."
+                sleep 3
+              done
+        - name: generate-config
+          image: busybox:1.36.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cp /run/spire/config-template/server.conf /run/spire/config/server.conf
+              PASSWORD=$(cat /run/spire/db-secret/password)
+              sed -i "s/__DB_PASSWORD__/$PASSWORD/g" /run/spire/config/server.conf
+          volumeMounts:
+            - name: spire-config-template
+              mountPath: /run/spire/config-template
+              readOnly: true
+            - name: spire-db-secret
+              mountPath: /run/spire/db-secret
+              readOnly: true
+            - name: spire-config
+              mountPath: /run/spire/config
+      containers:
+        - name: spire-server
+          image: ghcr.io/spiffe/spire-server:1.10.0
+          args:
+            - -config
+            - /run/spire/config/server.conf
+          ports:
+            - containerPort: 8081
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-data
+              mountPath: /run/spire/data
+          livenessProbe:
+            exec:
+              command: ["/opt/spire/bin/spire-server", "healthcheck"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["/opt/spire/bin/spire-server", "healthcheck", "--shallow"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: spire-config-template
+          configMap:
+            name: spire-server
+        - name: spire-db-secret
+          secret:
+            secretName: spire-db-owner
+        - name: spire-config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: spire-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi

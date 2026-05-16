@@ -1,0 +1,18 @@
+---
+- name: Verify
+  hosts: molecule-test
+  gather_facts: false
+  vars:
+    keycloak_namespace: keycloak
+    keycloak_pod_name: keycloak-0
+    keycloak_admin_secret_name: keycloak-admin-credentials
+  tasks:
+    - name: Import keycloak_password_reset role
+      import_role:
+        name: keycloak_password_reset
+
+    - name: Verify kcadm_result is defined
+      ansible.builtin.assert:
+        that:
+          - kcadm_result is defined
+        fail_msg: "kcadm_result not defined"
